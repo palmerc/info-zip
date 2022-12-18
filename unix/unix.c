@@ -1,996 +1,1430 @@
 /*
-  unix/unix.c - Zip 3
+  Copyright (c) 1990-2004 Info-ZIP.  All rights reserved.
 
-  Copyright (c) 1990-2008 Info-ZIP.  All rights reserved.
-
-  See the accompanying file LICENSE, version 2007-Mar-4 or later
-  (the contents of which are also included in zip.h) for terms of use.
+  See the accompanying file LICENSE, version 2000-Apr-09 or later
+  (the contents of which are also included in unzip.h) for terms of use.
   If, for some reason, all these files are missing, the Info-ZIP license
   also may be found at:  ftp://ftp.info-zip.org/pub/infozip/license.html
 */
-#include "zip.h"
+/*---------------------------------------------------------------------------
 
-#ifndef UTIL    /* the companion #endif is a bit of ways down ... */
+  unix.c
 
-#include <time.h>
+  Unix-specific routines for use with Info-ZIP's UnZip 5.41 and later.
 
-#if defined(MINIX) || defined(__mpexl)
-#  ifdef S_IWRITE
-#    undef S_IWRITE
-#  endif /* S_IWRITE */
-#  define S_IWRITE S_IWUSR
-#endif /* MINIX */
+  Contains:  readdir()
+             do_wild()           <-- generic enough to put in fileio.c?
+             mapattr()
+             mapname()
+             checkdir()
+             mkdir()
+             close_outfile()
+             defer_dir_attribs()
+             set_direc_attribs()
+             stamp_file()
+             version()
 
-#if (!defined(S_IWRITE) && defined(S_IWUSR))
-#  define S_IWRITE S_IWUSR
+  ---------------------------------------------------------------------------*/
+
+
+#define UNZIP_INTERNAL
+#include "unzip.h"
+
+#ifdef SCO_XENIX
+#  define SYSNDIR
+#else  /* SCO Unix, AIX, DNIX, TI SysV, Coherent 4.x, ... */
+#  if defined(__convexc__) || defined(SYSV) || defined(CRAY) || defined(BSD4_4)
+#    define DIRENT
+#  endif
+#endif
+#if defined(_AIX) || defined(__mpexl)
+#  define DIRENT
+#endif
+#ifdef COHERENT
+#  if defined(_I386) || (defined(__COHERENT__) && (__COHERENT__ >= 0x420))
+#    define DIRENT
+#  endif
 #endif
 
-#if defined(HAVE_DIRENT_H) || defined(_POSIX_VERSION)
+#ifdef _POSIX_VERSION
+#  ifndef DIRENT
+#    define DIRENT
+#  endif
+#endif
+
+#ifdef DIRENT
 #  include <dirent.h>
-#else /* !HAVE_DIRENT_H */
-#  ifdef HAVE_NDIR_H
-#    include <ndir.h>
-#  endif /* HAVE_NDIR_H */
-#  ifdef HAVE_SYS_NDIR_H
-#    include <sys/ndir.h>
-#  endif /* HAVE_SYS_NDIR_H */
-#  ifdef HAVE_SYS_DIR_H
-#    include <sys/dir.h>
-#  endif /* HAVE_SYS_DIR_H */
+#else
+#  ifdef SYSV
+#    ifdef SYSNDIR
+#      include <sys/ndir.h>
+#    else
+#      include <ndir.h>
+#    endif
+#  else /* !SYSV */
+#    ifndef NO_SYSDIR
+#      include <sys/dir.h>
+#    endif
+#  endif /* ?SYSV */
 #  ifndef dirent
 #    define dirent direct
 #  endif
-#endif /* HAVE_DIRENT_H || _POSIX_VERSION */
+#endif /* ?DIRENT */
 
-#define PAD 0
-#define PATH_END '/'
+#ifdef SET_DIR_ATTRIB
+typedef struct uxdirattr {      /* struct for holding unix style directory */
+    struct uxdirattr *next;     /*  info until can be sorted and set at end */
+    char *fn;                   /* filename of directory */
+    union {
+        iztimes t3;             /* mtime, atime, ctime */
+        ztimbuf t2;             /* modtime, actime */
+    } u;
+    unsigned perms;             /* same as min_info.file_attr */
+    int have_uidgid;            /* flag */
+    ush uidgid[2];
+    char fnbuf[1];              /* buffer stub for directory name */
+} uxdirattr;
+#define UxAtt(d)  ((uxdirattr *)d)    /* typecast shortcut */
+#endif /* SET_DIR_ATTRIB */
 
-/* Library functions not in (most) header files */
+#ifdef ACORN_FTYPE_NFS
+/* Acorn bits for NFS filetyping */
+typedef struct {
+  uch ID[2];
+  uch size[2];
+  uch ID_2[4];
+  uch loadaddr[4];
+  uch execaddr[4];
+  uch attr[4];
+} RO_extra_block;
 
-#ifdef _POSIX_VERSION
-#  include <utime.h>
-#else
-   int utime OF((char *, time_t *));
-#endif
+#endif /* ACORN_FTYPE_NFS */
 
-extern char *label;
-local ulg label_time = 0;
-local ulg label_mode = 0;
-local time_t label_utim = 0;
-
-/* Local functions */
-local char *readd OF((DIR *));
+/* static int created_dir;      */      /* used in mapname(), checkdir() */
+/* static int renamed_fullpath; */      /* ditto */
 
 
-#ifdef NO_DIR                    /* for AT&T 3B1 */
-#include <sys/dir.h>
-#ifndef dirent
-#  define dirent direct
-#endif
+#ifndef SFX
+#ifdef NO_DIR                  /* for AT&T 3B1 */
+
+#define opendir(path) fopen(path,"r")
+#define closedir(dir) fclose(dir)
 typedef FILE DIR;
-/*
-**  Apparently originally by Rich Salz.
-**  Cleaned up and modified by James W. Birdsall.
-*/
+typedef struct zdir {
+    FILE *dirhandle;
+    struct dirent *entry;
+} DIR
+DIR *opendir OF((ZCONST char *dirspec));
+void closedir OF((DIR *dirp));
+struct dirent *readdir OF((DIR *dirp));
 
-#define opendir(path) fopen(path, "r")
-
-struct dirent *readdir(dirp)
-DIR *dirp;
+DIR *opendir(dirspec)
+    ZCONST char *dirspec;
 {
-  static struct dirent entry;
+    DIR *dirp;
 
-  if (dirp == NULL)
-    return NULL;
-  for (;;)
-    if (fread (&entry, sizeof (struct dirent), 1, dirp) == 0)
-      return NULL;
-    else if (entry.d_ino)
-      return (&entry);
-} /* end of readdir() */
+    if ((dirp = malloc(sizeof(DIR)) != NULL) {
+        if ((dirp->dirhandle = fopen(dirspec, "r")) == NULL) {
+            free(dirp);
+            dirp = NULL;
+        }
+    }
+    return dirp;
+}
 
-#define closedir(dirp) fclose(dirp)
+void closedir(dirp)
+    DIR *dirp;
+{
+    fclose(dirp->dirhandle);
+    free(dirp);
+}
+
+/*
+ *  Apparently originally by Rich Salz.
+ *  Cleaned up and modified by James W. Birdsall.
+ */
+struct dirent *readdir(dirp)
+    DIR *dirp;
+{
+
+    if (dirp == NULL)
+        return NULL;
+
+    for (;;)
+        if (fread(&(dirp->entry), sizeof (struct dirent), 1,
+                  dirp->dirhandle) == 0)
+            return (struct dirent *)NULL;
+        else if ((dirp->entry).d_ino)
+            return &(dirp->entry);
+
+} /* end function readdir() */
+
 #endif /* NO_DIR */
 
 
-local char *readd(d)
-DIR *d;                 /* directory stream to read from */
-/* Return a pointer to the next name in the directory stream d, or NULL if
-   no more entries or an error occurs. */
+/**********************/
+/* Function do_wild() */   /* for porting:  dir separator; match(ignore_case) */
+/**********************/
+
+char *do_wild(__G__ wildspec)
+    __GDEF
+    ZCONST char *wildspec;  /* only used first time on a given dir */
 {
-  struct dirent *e;
-
-  e = readdir(d);
-  return e == NULL ? (char *) NULL : e->d_name;
-}
-
-int procname(n, caseflag)
-char *n;                /* name to process */
-int caseflag;           /* true to force case-sensitive match */
-/* Process a name or sh expression to operate on (or exclude).  Return
-   an error code in the ZE_ class. */
-{
-  char *a;              /* path and name for recursion */
-  DIR *d;               /* directory stream from opendir() */
-  char *e;              /* pointer to name from readd() */
-  int m;                /* matched flag */
-  char *p;              /* path for recursion */
-  z_stat s;             /* result of stat() */
-  struct zlist far *z;  /* steps through zfiles list */
-
-  if (strcmp(n, "-") == 0)   /* if compressing stdin */
-    return newname(n, 0, caseflag);
-  else if (LSSTAT(n, &s))
-  {
-    /* Not a file or directory--search for shell expression in zip file */
-    p = ex2in(n, 0, (int *)NULL);       /* shouldn't affect matching chars */
-    m = 1;
-    for (z = zfiles; z != NULL; z = z->nxt) {
-      if (MATCH(p, z->iname, caseflag))
-      {
-        z->mark = pcount ? filter(z->zname, caseflag) : 1;
-        if (verbose)
-            fprintf(mesg, "zip diagnostic: %scluding %s\n",
-               z->mark ? "in" : "ex", z->name);
-        m = 0;
-      }
-    }
-    free((zvoid *)p);
-    return m ? ZE_MISS : ZE_OK;
-  }
-
-  /* Live name--use if file, recurse if directory */
-#ifdef OS390
-  if (S_ISREG(s.st_mode) || S_ISLNK(s.st_mode))
-#else
-#  ifdef S_IFLNK
-  if ((s.st_mode & S_IFREG) == S_IFREG || (s.st_mode & S_IFLNK) == S_IFLNK)
-#  else
-  if ((s.st_mode & S_IFREG) == S_IFREG)
-#  endif
-#endif
-  {
-    /* add or remove name of file */
-    if ((m = newname(n, 0, caseflag)) != ZE_OK)
-      return m;
-  }
-#ifdef OS390
-  else if (S_ISDIR(s.st_mode))
-#else
-  else if ((s.st_mode & S_IFDIR) == S_IFDIR)
-#endif
-  {
-    /* Add trailing / to the directory name */
-    if ((p = malloc(strlen(n)+2)) == NULL)
-      return ZE_MEM;
-    if (strcmp(n, ".") == 0) {
-      *p = '\0';  /* avoid "./" prefix and do not create zip entry */
-    } else {
-      strcpy(p, n);
-      a = p + strlen(p);
-      if (a[-1] != '/')
-        strcpy(a, "/");
-      if (dirnames && (m = newname(p, 1, caseflag)) != ZE_OK) {
-        free((zvoid *)p);
-        return m;
-      }
-    }
-    /* recurse into directory */
-    if (recurse && (d = opendir(n)) != NULL)
-    {
-      while ((e = readd(d)) != NULL) {
-        if (strcmp(e, ".") && strcmp(e, ".."))
-        {
-          if ((a = malloc(strlen(p) + strlen(e) + 1)) == NULL)
-          {
-            closedir(d);
-            free((zvoid *)p);
-            return ZE_MEM;
-          }
-          strcat(strcpy(a, p), e);
-          if ((m = procname(a, caseflag)) != ZE_OK)   /* recurse on name */
-          {
-            if (m == ZE_MISS)
-              zipwarn("name not matched: ", a);
-            else
-              ziperr(m, a);
-          }
-          free((zvoid *)a);
-        }
-      }
-      closedir(d);
-    }
-    free((zvoid *)p);
-  } /* (s.st_mode & S_IFDIR) */
-#ifdef OS390
-  else if (S_ISFIFO(s.st_mode))
-#else
-  else if ((s.st_mode & S_IFIFO) == S_IFIFO)
-#endif
-  {
-    if (allow_fifo) {
-      /* FIFO (Named Pipe) - handle as normal file */
-      /* add or remove name of FIFO */
-      /* zip will stop if FIFO is open and wait for pipe to be fed and closed */
-      if (noisy) zipwarn("Reading FIFO (Named Pipe): ", n);
-      if ((m = newname(n, 0, caseflag)) != ZE_OK)
-        return m;
-    } else {
-      zipwarn("ignoring FIFO (Named Pipe) - use -FI to read: ", n);
-      return ZE_OK;
-    }
-  } /* S_IFIFO */
-  else
-    zipwarn("ignoring special file: ", n);
-  return ZE_OK;
-}
-
-char *ex2in(x, isdir, pdosflag)
-char *x;                /* external file name */
-int isdir;              /* input: x is a directory */
-int *pdosflag;          /* output: force MSDOS file attributes? */
-/* Convert the external file name to a zip file name, returning the malloc'ed
-   string or NULL if not enough memory. */
-{
-  char *n;              /* internal file name (malloc'ed) */
-  char *t = NULL;       /* shortened name */
-  int dosflag;
-
-  dosflag = dosify;     /* default for non-DOS and non-OS/2 */
-
-  /* Find starting point in name before doing malloc */
-  /* Strip "//host/share/" part of a UNC name */
-  if (!strncmp(x,"//",2) && (x[2] != '\0' && x[2] != '/')) {
-    n = x + 2;
-    while (*n != '\0' && *n != '/')
-      n++;              /* strip host name */
-    if (*n != '\0') {
-      n++;
-      while (*n != '\0' && *n != '/')
-        n++;            /* strip `share' name */
-    }
-    if (*n != '\0')
-      t = n + 1;
-  } else
-      t = x;
-  while (*t == '/')
-    t++;                /* strip leading '/' chars to get a relative path */
-  while (*t == '.' && t[1] == '/')
-    t += 2;             /* strip redundant leading "./" sections */
-
-  /* Make changes, if any, to the copied name (leave original intact) */
-  if (!pathput)
-    t = last(t, PATH_END);
-
-  /* Malloc space for internal name and copy it */
-  if ((n = malloc(strlen(t) + 1)) == NULL)
-    return NULL;
-  strcpy(n, t);
-
-  if (dosify)
-    msname(n);
-
-#ifdef EBCDIC
-  strtoasc(n, n);       /* here because msname() needs native coding */
-#endif
-
-  /* Returned malloc'ed name */
-  if (pdosflag)
-    *pdosflag = dosflag;
-
-  if (isdir) return n;  /* avoid warning on unused variable */
-  return n;
-}
-
-char *in2ex(n)
-char *n;                /* internal file name */
-/* Convert the zip file name to an external file name, returning the malloc'ed
-   string or NULL if not enough memory. */
-{
-  char *x;              /* external file name */
-
-  if ((x = malloc(strlen(n) + 1 + PAD)) == NULL)
-    return NULL;
-#ifdef EBCDIC
-  strtoebc(x, n);
-#else
-  strcpy(x, n);
-#endif
-  return x;
-}
-
-/*
- * XXX use ztimbuf in both POSIX and non POSIX cases ?
- */
-void stamp(f, d)
-char *f;                /* name of file to change */
-ulg d;                  /* dos-style time to change it to */
-/* Set last updated and accessed time of file f to the DOS time d. */
-{
-#ifdef _POSIX_VERSION
-  struct utimbuf u;     /* argument for utime()  const ?? */
-#else
-  time_t u[2];          /* argument for utime() */
-#endif
-
-  /* Convert DOS time to time_t format in u */
-#ifdef _POSIX_VERSION
-  u.actime = u.modtime = dos2unixtime(d);
-  utime(f, &u);
-#else
-  u[0] = u[1] = dos2unixtime(d);
-  utime(f, u);
-#endif
-
-}
-
-ulg filetime(f, a, n, t)
-  char *f;                /* name of file to get info on */
-  ulg *a;                 /* return value: file attributes */
-  zoff_t *n;              /* return value: file size */
-  iztimes *t;             /* return value: access, modific. and creation times */
-/* If file *f does not exist, return 0.  Else, return the file's last
-   modified date and time as an MSDOS date and time.  The date and
-   time is returned in a long with the date most significant to allow
-   unsigned integer comparison of absolute times.  Also, if a is not
-   a NULL pointer, store the file attributes there, with the high two
-   bytes being the Unix attributes, and the low byte being a mapping
-   of that to DOS attributes.  If n is not NULL, store the file size
-   there.  If t is not NULL, the file's access, modification and creation
-   times are stored there as UNIX time_t values.
-   If f is "-", use standard input as the file. If f is a device, return
-   a file size of -1 */
-{
-  z_stat s;         /* results of stat() */
-  /* converted to pointer from using FNMAX - 11/8/04 EG */
-  char *name;
-  int len = strlen(f);
-
-  if (f == label) {
-    if (a != NULL)
-      *a = label_mode;
-    if (n != NULL)
-      *n = -2L; /* convention for a label name */
-    if (t != NULL)
-      t->atime = t->mtime = t->ctime = label_utim;
-    return label_time;
-  }
-  if ((name = malloc(len + 1)) == NULL) {
-    ZIPERR(ZE_MEM, "filetime");
-  }
-  strcpy(name, f);
-  if (name[len - 1] == '/')
-    name[len - 1] = '\0';
-  /* not all systems allow stat'ing a file with / appended */
-  if (strcmp(f, "-") == 0) {
-    if (zfstat(fileno(stdin), &s) != 0) {
-      free(name);
-      error("fstat(stdin)");
-    }
-  }
-  else if (LSSTAT(name, &s) != 0) {
-    /* Accept about any file kind including directories
-     * (stored with trailing / with -r option)
-     */
-    free(name);
-    return 0;
-  }
-  free(name);
-
-  if (a != NULL) {
-#ifndef OS390
-    *a = ((ulg)s.st_mode << 16) | !(s.st_mode & S_IWRITE);
-#else
-/*
-**  The following defines are copied from the unizip source and represent the
-**  legacy Unix mode flags.  These fixed bit masks are no longer required
-**  by XOPEN standards - the S_IS### macros being the new recommended method.
-**  The approach here of setting the legacy flags by testing the macros should
-**  work under any _XOPEN_SOURCE environment (and will just rebuild the same bit
-**  mask), but is required if the legacy bit flags differ from legacy Unix.
+/* these statics are now declared in SYSTEM_SPECIFIC_GLOBALS in unxcfg.h:
+    static DIR *wild_dir = (DIR *)NULL;
+    static ZCONST char *wildname;
+    static char *dirname, matchname[FILNAMSIZ];
+    static int notfirstcall=FALSE, have_dirname, dirnamelen;
 */
-#define UNX_IFDIR      0040000     /* Unix directory */
-#define UNX_IFREG      0100000     /* Unix regular file */
-#define UNX_IFSOCK     0140000     /* Unix socket (BSD, not SysV or Amiga) */
-#define UNX_IFLNK      0120000     /* Unix symbolic link (not SysV, Amiga) */
-#define UNX_IFBLK      0060000     /* Unix block special       (not Amiga) */
-#define UNX_IFCHR      0020000     /* Unix character special   (not Amiga) */
-#define UNX_IFIFO      0010000     /* Unix fifo    (BCC, not MSC or Amiga) */
-    {
-    mode_t legacy_modes;
+    struct dirent *file;
 
-    /* Initialize with permission bits--which are not implementation-optional */
-    legacy_modes = s.st_mode & (S_IRWXU | S_IRWXG | S_IRWXO | S_ISUID | S_ISGID | S_ISVTX);
-    if (S_ISDIR(s.st_mode))
-      legacy_modes |= UNX_IFDIR;
-    if (S_ISREG(s.st_mode))
-      legacy_modes |= UNX_IFREG;
-    if (S_ISLNK(s.st_mode))
-      legacy_modes |= UNX_IFLNK;
-    if (S_ISBLK(s.st_mode))
-      legacy_modes |= UNX_IFBLK;
-    if (S_ISCHR(s.st_mode))
-      legacy_modes |= UNX_IFCHR;
-    if (S_ISFIFO(s.st_mode))
-      legacy_modes |= UNX_IFIFO;
-    if (S_ISSOCK(s.st_mode))
-      legacy_modes |= UNX_IFSOCK;
-    *a = ((ulg)legacy_modes << 16) | !(s.st_mode & S_IWRITE);
+    /* Even when we're just returning wildspec, we *always* do so in
+     * matchname[]--calling routine is allowed to append four characters
+     * to the returned string, and wildspec may be a pointer to argv[].
+     */
+    if (!G.notfirstcall) {  /* first call:  must initialize everything */
+        G.notfirstcall = TRUE;
+
+        if (!iswild(wildspec)) {
+            strcpy(G.matchname, wildspec);
+            G.have_dirname = FALSE;
+            G.wild_dir = NULL;
+            return G.matchname;
+        }
+
+        /* break the wildspec into a directory part and a wildcard filename */
+        if ((G.wildname = (ZCONST char *)strrchr(wildspec, '/')) == NULL) {
+            G.dirname = ".";
+            G.dirnamelen = 1;
+            G.have_dirname = FALSE;
+            G.wildname = wildspec;
+        } else {
+            ++G.wildname;     /* point at character after '/' */
+            G.dirnamelen = G.wildname - wildspec;
+            if ((G.dirname = (char *)malloc(G.dirnamelen+1)) == (char *)NULL) {
+                Info(slide, 0x201, ((char *)slide,
+                  "warning:  cannot allocate wildcard buffers\n"));
+                strcpy(G.matchname, wildspec);
+                return G.matchname; /* but maybe filespec was not a wildcard */
+            }
+            strncpy(G.dirname, wildspec, G.dirnamelen);
+            G.dirname[G.dirnamelen] = '\0';   /* terminate for strcpy below */
+            G.have_dirname = TRUE;
+        }
+
+        if ((G.wild_dir = (zvoid *)opendir(G.dirname)) != (zvoid *)NULL) {
+            while ((file = readdir((DIR *)G.wild_dir)) !=
+                   (struct dirent *)NULL) {
+                Trace((stderr, "do_wild:  readdir returns %s\n",
+                  FnFilter1(file->d_name)));
+                if (file->d_name[0] == '.' && G.wildname[0] != '.')
+                    continue; /* Unix:  '*' and '?' do not match leading dot */
+                if (match(file->d_name, G.wildname, 0) && /* 0 == case sens. */
+                    /* skip "." and ".." directory entries */
+                    strcmp(file->d_name, ".") && strcmp(file->d_name, "..")) {
+                    Trace((stderr, "do_wild:  match() succeeds\n"));
+                    if (G.have_dirname) {
+                        strcpy(G.matchname, G.dirname);
+                        strcpy(G.matchname+G.dirnamelen, file->d_name);
+                    } else
+                        strcpy(G.matchname, file->d_name);
+                    return G.matchname;
+                }
+            }
+            /* if we get to here directory is exhausted, so close it */
+            closedir((DIR *)G.wild_dir);
+            G.wild_dir = (zvoid *)NULL;
+        }
+        Trace((stderr, "do_wild:  opendir(%s) returns NULL\n",
+          FnFilter1(G.dirname)));
+
+        /* return the raw wildspec in case that works (e.g., directory not
+         * searchable, but filespec was not wild and file is readable) */
+        strcpy(G.matchname, wildspec);
+        return G.matchname;
     }
-#endif
-    if ((s.st_mode & S_IFMT) == S_IFDIR) {
-      *a |= MSDOS_DIR_ATTR;
+
+    /* last time through, might have failed opendir but returned raw wildspec */
+    if ((DIR *)G.wild_dir == (DIR *)NULL) {
+        G.notfirstcall = FALSE; /* nothing left--reset for new wildspec */
+        if (G.have_dirname)
+            free(G.dirname);
+        return (char *)NULL;
     }
-  }
-  if (n != NULL)
-    *n = (s.st_mode & S_IFMT) == S_IFREG ? s.st_size : -1L;
-  if (t != NULL) {
-    t->atime = s.st_atime;
-    t->mtime = s.st_mtime;
-    t->ctime = t->mtime;   /* best guess, (s.st_ctime: last status change!!) */
-  }
-  return unix2dostime(&s.st_mtime);
-}
+
+    /* If we've gotten this far, we've read and matched at least one entry
+     * successfully (in a previous call), so dirname has been copied into
+     * matchname already.
+     */
+    while ((file = readdir((DIR *)G.wild_dir)) != (struct dirent *)NULL) {
+        Trace((stderr, "do_wild:  readdir returns %s\n",
+          FnFilter1(file->d_name)));
+        if (file->d_name[0] == '.' && G.wildname[0] != '.')
+            continue;   /* Unix:  '*' and '?' do not match leading dot */
+        if (match(file->d_name, G.wildname, 0)) { /* 0 == don't ignore case */
+            Trace((stderr, "do_wild:  match() succeeds\n"));
+            if (G.have_dirname) {
+                /* strcpy(G.matchname, G.dirname); */
+                strcpy(G.matchname+G.dirnamelen, file->d_name);
+            } else
+                strcpy(G.matchname, file->d_name);
+            return G.matchname;
+        }
+    }
+
+    closedir((DIR *)G.wild_dir);  /* at least one entry read; nothing left */
+    G.wild_dir = (zvoid *)NULL;
+    G.notfirstcall = FALSE;       /* reset for new wildspec */
+    if (G.have_dirname)
+        free(G.dirname);
+    return (char *)NULL;
+
+} /* end function do_wild() */
+
+#endif /* !SFX */
 
 
-#ifndef QLZIP /* QLZIP Unix2QDOS cross-Zip supplies an extended variant */
 
-int set_new_unix_extra_field(z, s)
-  struct zlist far *z;
-  z_stat *s;
-  /* New unix extra field.
-     Currently only UIDs and GIDs are stored. */
+
+
+/**********************/
+/* Function mapattr() */
+/**********************/
+
+int mapattr(__G)
+    __GDEF
 {
-  int uid_size;
-  int gid_size;
-  int ef_data_size;
-  char *extra;
-  char *cextra;
-  ulg id;
-  int b;
+    ulg tmp = G.crec.external_file_attributes;
 
-  uid_size = sizeof(s->st_uid);
-  gid_size = sizeof(s->st_gid);
+    G.pInfo->file_attr = 0;
+    /* initialized to 0 for check in "default" branch below... */
 
-/* New extra field
-   tag       (2 bytes)
-   size      (2 bytes)
-   version   (1 byte)
-   uid_size  (1 byte - size in bytes)
-   uid       (variable)
-   gid_size  (1 byte - size in bytes)
-   gid       (variable)
- */
-   
-  ef_data_size = 1 + 1 + uid_size + 1 + gid_size;
+    switch (G.pInfo->hostnum) {
+        case AMIGA_:
+            tmp = (unsigned)(tmp>>17 & 7);   /* Amiga RWE bits */
+            G.pInfo->file_attr = (unsigned)(tmp<<6 | tmp<<3 | tmp);
+            break;
+        case THEOS_:
+            tmp &= 0xF1FFFFFFL;
+            if ((tmp & 0xF0000000L) != 0x40000000L)
+                tmp &= 0x01FFFFFFL;     /* not a dir, mask all ftype bits */
+            else
+                tmp &= 0x41FFFFFFL;     /* leave directory bit as set */
+            /* fall through! */
+        case UNIX_:
+        case VMS_:
+        case ACORN_:
+        case ATARI_:
+        case BEOS_:
+        case QDOS_:
+        case TANDEM_:
+            G.pInfo->file_attr = (unsigned)(tmp >> 16);
+            if (G.pInfo->file_attr != 0 || !G.extra_field) {
+                return 0;
+            } else {
+                /* Some (non-Info-ZIP) implementations of Zip for Unix and
+                 * VMS (and probably others ??) leave 0 in the upper 16-bit
+                 * part of the external_file_attributes field. Instead, they
+                 * store file permission attributes in some extra field.
+                 * As a work-around, we search for the presence of one of
+                 * these extra fields and fall back to the MSDOS compatible
+                 * part of external_file_attributes if one of the known
+                 * e.f. types has been detected.
+                 * Later, we might implement extraction of the permission
+                 * bits from the VMS extra field. But for now, the work-around
+                 * should be sufficient to provide "readable" extracted files.
+                 * (For ASI Unix e.f., an experimental remap from the e.f.
+                 * mode value IS already provided!)
+                 */
+                ush ebID;
+                unsigned ebLen;
+                uch *ef = G.extra_field;
+                unsigned ef_len = G.crec.extra_field_length;
+                int r = FALSE;
 
-  if ((extra = (char *)malloc(z->ext + 4 + ef_data_size)) == NULL)
-    return ZE_MEM;
-  if ((cextra = (char *)malloc(z->ext + 4 + ef_data_size)) == NULL)
-    return ZE_MEM;
+                while (!r && ef_len >= EB_HEADSIZE) {
+                    ebID = makeword(ef);
+                    ebLen = (unsigned)makeword(ef+EB_LEN);
+                    if (ebLen > (ef_len - EB_HEADSIZE))
+                        /* discoverd some e.f. inconsistency! */
+                        break;
+                    switch (ebID) {
+                      case EF_ASIUNIX:
+                        if (ebLen >= (EB_ASI_MODE+2)) {
+                            G.pInfo->file_attr =
+                              (unsigned)makeword(ef+(EB_HEADSIZE+EB_ASI_MODE));
+                            /* force stop of loop: */
+                            ef_len = (ebLen + EB_HEADSIZE);
+                            break;
+                        }
+                        /* else: fall through! */
+                      case EF_PKVMS:
+                        /* "found nondecypherable e.f. with perm. attr" */
+                        r = TRUE;
+                      default:
+                        break;
+                    }
+                    ef_len -= (ebLen + EB_HEADSIZE);
+                    ef += (ebLen + EB_HEADSIZE);
+                }
+                if (!r)
+                    return 0;
+            }
+            /* fall through! */
+        /* all remaining cases:  expand MSDOS read-only bit into write perms */
+        case FS_FAT_:
+            /* PKWARE's PKZip for Unix marks entries as FS_FAT_, but stores the
+             * Unix attributes in the upper 16 bits of the external attributes
+             * field, just like Info-ZIP's Zip for Unix.  We try to use that
+             * value, after a check for consistency with the MSDOS attribute
+             * bits (see below).
+             */
+            G.pInfo->file_attr = (unsigned)(tmp >> 16);
+            /* fall through! */
+        case FS_HPFS_:
+        case FS_NTFS_:
+        case MAC_:
+        case TOPS20_:
+        default:
+            /* Ensure that DOS subdir bit is set when the entry's name ends
+             * in a '/'.  Some third-party Zip programs fail to set the subdir
+             * bit for directory entries.
+             */
+            if ((tmp & 0x10) == 0) {
+                extent fnlen = strlen(G.filename);
+                if (fnlen > 0 && G.filename[fnlen-1] == '/')
+                    tmp |= 0x10;
+            }
+            /* read-only bit --> write perms; subdir bit --> dir exec bit */
+            tmp = !(tmp & 1) << 1  |  (tmp & 0x10) >> 4;
+            if ((G.pInfo->file_attr & 0700) == (unsigned)(0400 | tmp<<6))
+                /* keep previous G.pInfo->file_attr setting, when its "owner"
+                 * part appears to be consistent with DOS attribute flags!
+                 */
+                return 0;
+            G.pInfo->file_attr = (unsigned)(0444 | tmp<<6 | tmp<<3 | tmp);
+            break;
+    } /* end switch (host-OS-created-by) */
 
-  if (z->ext)
-    memcpy(extra, z->extra, z->ext);
-  if (z->cext)
-    memcpy(cextra, z->cextra, z->cext);
+    /* for originating systems with no concept of "group," "other," "system": */
+    umask( (int)(tmp=umask(0)) );    /* apply mask to expanded r/w(/x) perms */
+    G.pInfo->file_attr &= ~tmp;
 
-  free(z->extra);
-  z->extra = extra;
-  free(z->cextra);
-  z->cextra = cextra;
+    return 0;
 
-  z->extra[z->ext + 0] = 'u';
-  z->extra[z->ext + 1] = 'x';
-  z->extra[z->ext + 2] = (char)ef_data_size;     /* length of data part */
-  z->extra[z->ext + 3] = 0;
-  z->extra[z->ext + 4] = 1;                      /* version */
-
-  /* UID */
-  z->extra[z->ext + 5] = (char)(uid_size);       /* uid size in bytes */
-  b = 6;
-  id = (ulg)(s->st_uid);
-  z->extra[z->ext + b] = (char)(id & 0xFF);
-  if (uid_size > 1) {
-    b++;
-    id = id >> 8;
-    z->extra[z->ext + b] = (char)(id & 0xFF);
-    if (uid_size > 2) {
-      b++;
-      id = id >> 8;
-      z->extra[z->ext + b] = (char)(id & 0xFF);
-      b++;
-      id = id >> 8;
-      z->extra[z->ext + b] = (char)(id & 0xFF);
-      if (uid_size == 8) {
-        b++;
-        id = id >> 8;
-        z->extra[z->ext + b] = (char)(id & 0xFF);
-        b++;
-        id = id >> 8;
-        z->extra[z->ext + b] = (char)(id & 0xFF);
-        b++;
-        id = id >> 8;
-        z->extra[z->ext + b] = (char)(id & 0xFF);
-        b++;
-        id = id >> 8;
-        z->extra[z->ext + b] = (char)(id & 0xFF);
-      }
-    }
-  }
-
-  /* GID */
-  b++;
-  z->extra[z->ext + b] = (char)(gid_size);       /* gid size in bytes */
-  b++;
-  id = (ulg)(s->st_gid);
-  z->extra[z->ext + b] = (char)(id & 0xFF);
-  if (gid_size > 1) {
-    b++;
-    id = id >> 8;
-    z->extra[z->ext + b] = (char)(id & 0xFF);
-    if (gid_size > 2) {
-      b++;
-      id = id >> 8;
-      z->extra[z->ext + b] = (char)(id & 0xFF);
-      b++;
-      id = id >> 8;
-      z->extra[z->ext + b] = (char)(id & 0xFF);
-      if (gid_size == 8) {
-        b++;
-        id = id >> 8;
-        z->extra[z->ext + b] = (char)(id & 0xFF);
-        b++;
-        id = id >> 8;
-        z->extra[z->ext + b] = (char)(id & 0xFF);
-        b++;
-        id = id >> 8;
-        z->extra[z->ext + b] = (char)(id & 0xFF);
-        b++;
-        id = id >> 8;
-        z->extra[z->ext + b] = (char)(id & 0xFF);
-      }
-    }
-  }
-
-  /* copy local extra field to central directory extra field */
-  memcpy((z->cextra) + z->cext, (z->extra) + z->ext, 4 + ef_data_size);
-
-  z->ext = z->ext + 4 + ef_data_size;
-  z->cext = z->cext + 4 + ef_data_size;
-
-  return ZE_OK;
-}
-
-
-int set_extra_field(z, z_utim)
-  struct zlist far *z;
-  iztimes *z_utim;
-  /* store full data in local header but just modification time stamp info
-     in central header */
-{
-  z_stat s;
-  char *name;
-  int len = strlen(z->name);
-
-  /* For the full sized UT local field including the UID/GID fields, we
-   * have to stat the file again. */
-
-  if ((name = malloc(len + 1)) == NULL) {
-    ZIPERR(ZE_MEM, "set_extra_field");
-  }
-  strcpy(name, z->name);
-  if (name[len - 1] == '/')
-    name[len - 1] = '\0';
-  /* not all systems allow stat'ing a file with / appended */
-  if (LSSTAT(name, &s)) {
-    free(name);
-    return ZE_OPEN;
-  }
-  free(name);
-
-#define EB_L_UT_SIZE    (EB_HEADSIZE + EB_UT_LEN(2))
-#define EB_C_UT_SIZE    (EB_HEADSIZE + EB_UT_LEN(1))
-
-/* The flag UIDGID_NOT_16BIT should be set by the pre-compile configuration
-   script when it detects st_uid or st_gid sizes differing from 16-bit.
- */
-#ifndef UIDGID_NOT_16BIT
-  /* The following "second-level" check for st_uid and st_gid members being
-     16-bit wide is only added as a safety precaution in case the "first-level"
-     check failed to define the UIDGID_NOT_16BIT symbol.
-     The first-level check should have been implemented in the automatic
-     compile configuration process.
-   */
-# ifdef UIDGID_ARE_16B
-#  undef UIDGID_ARE_16B
-# endif
-  /* The following expression is a compile-time constant and should (hopefully)
-     get optimized away by any sufficiently intelligent compiler!
-   */
-# define UIDGID_ARE_16B  (sizeof(s.st_uid) == 2 && sizeof(s.st_gid) == 2)
-
-# define EB_L_UX2_SIZE   (EB_HEADSIZE + EB_UX2_MINLEN)
-# define EB_C_UX2_SIZE   EB_HEADSIZE
-# define EF_L_UNIX_SIZE  (EB_L_UT_SIZE + (UIDGID_ARE_16B ? EB_L_UX2_SIZE : 0))
-# define EF_C_UNIX_SIZE  (EB_C_UT_SIZE + (UIDGID_ARE_16B ? EB_C_UX2_SIZE : 0))
-#else
-# define EF_L_UNIX_SIZE EB_L_UT_SIZE
-# define EF_C_UNIX_SIZE EB_C_UT_SIZE
-#endif /* !UIDGID_NOT_16BIT */
-
-  if ((z->extra = (char *)malloc(EF_L_UNIX_SIZE)) == NULL)
-    return ZE_MEM;
-  if ((z->cextra = (char *)malloc(EF_C_UNIX_SIZE)) == NULL)
-    return ZE_MEM;
-
-  z->extra[0]  = 'U';
-  z->extra[1]  = 'T';
-  z->extra[2]  = (char)EB_UT_LEN(2);    /* length of data part of local e.f. */
-  z->extra[3]  = 0;
-  z->extra[4]  = EB_UT_FL_MTIME | EB_UT_FL_ATIME;    /* st_ctime != creation */
-  z->extra[5]  = (char)(s.st_mtime);
-  z->extra[6]  = (char)(s.st_mtime >> 8);
-  z->extra[7]  = (char)(s.st_mtime >> 16);
-  z->extra[8]  = (char)(s.st_mtime >> 24);
-  z->extra[9]  = (char)(s.st_atime);
-  z->extra[10] = (char)(s.st_atime >> 8);
-  z->extra[11] = (char)(s.st_atime >> 16);
-  z->extra[12] = (char)(s.st_atime >> 24);
-
-#ifndef UIDGID_NOT_16BIT
-  /* Only store the UID and GID in the old Ux extra field if the runtime
-     system provides them in 16-bit wide variables.  */
-  if (UIDGID_ARE_16B) {
-    z->extra[13] = 'U';
-    z->extra[14] = 'x';
-    z->extra[15] = (char)EB_UX2_MINLEN; /* length of data part of local e.f. */
-    z->extra[16] = 0;
-    z->extra[17] = (char)(s.st_uid);
-    z->extra[18] = (char)(s.st_uid >> 8);
-    z->extra[19] = (char)(s.st_gid);
-    z->extra[20] = (char)(s.st_gid >> 8);
-  }
-#endif /* !UIDGID_NOT_16BIT */
-
-  z->ext = EF_L_UNIX_SIZE;
-
-  memcpy(z->cextra, z->extra, EB_C_UT_SIZE);
-  z->cextra[EB_LEN] = (char)EB_UT_LEN(1);
-#ifndef UIDGID_NOT_16BIT
-  if (UIDGID_ARE_16B) {
-    /* Copy header of Ux extra field from local to central */
-    memcpy(z->cextra+EB_C_UT_SIZE, z->extra+EB_L_UT_SIZE, EB_C_UX2_SIZE);
-    z->cextra[EB_LEN+EB_C_UT_SIZE] = 0;
-  }
-#endif
-  z->cext = EF_C_UNIX_SIZE;
-
-#if 0  /* UID/GID presence is now signaled by central EF_IZUNIX2 field ! */
-  /* lower-middle external-attribute byte (unused until now):
-   *   high bit        => (have GMT mod/acc times) >>> NO LONGER USED! <<<
-   *   second-high bit => have Unix UID/GID info
-   * NOTE: The high bit was NEVER used in any official Info-ZIP release,
-   *       but its future use should be avoided (if possible), since it
-   *       was used as "GMT mod/acc times local extra field" flags in Zip beta
-   *       versions 2.0j up to 2.0v, for about 1.5 years.
-   */
-  z->atx |= 0x4000;
-#endif /* never */
-
-  /* new unix extra field */
-  set_new_unix_extra_field(z, &s);
-
-  return ZE_OK;
-}
-
-#endif /* !QLZIP */
+} /* end function mapattr() */
 
 
-int deletedir(d)
-char *d;                /* directory to delete */
-/* Delete the directory *d if it is empty, do nothing otherwise.
-   Return the result of rmdir(), delete(), or system().
-   For VMS, d must be in format [x.y]z.dir;1  (not [x.y.z]).
+
+
+
+/************************/
+/*  Function mapname()  */
+/************************/
+
+int mapname(__G__ renamed)
+    __GDEF
+    int renamed;
+/*
+ * returns:
+ *  MPN_OK          - no problem detected
+ *  MPN_INF_TRUNC   - caution (truncated filename)
+ *  MPN_INF_SKIP    - info "skip entry" (dir doesn't exist)
+ *  MPN_ERR_SKIP    - error -> skip entry
+ *  MPN_ERR_TOOLONG - error -> path is too long
+ *  MPN_NOMEM       - error (memory allocation failed) -> skip entry
+ *  [also MPN_VOL_LABEL, MPN_CREATED_DIR]
  */
 {
-# ifdef NO_RMDIR
-    /* code from Greg Roelofs, who horked it from Mark Edwards (unzip) */
-    int r, len;
-    char *s;              /* malloc'd string for system command */
-
-    len = strlen(d);
-    if ((s = malloc(len + 34)) == NULL)
-      return 127;
-
-    sprintf(s, "IFS=\" \t\n\" /bin/rmdir %s 2>/dev/null", d);
-    r = system(s);
-    free(s);
-    return r;
-# else /* !NO_RMDIR */
-    return rmdir(d);
-# endif /* ?NO_RMDIR */
-}
-
-#endif /* !UTIL */
-
-
-/******************************/
-/*  Function version_local()  */
-/******************************/
-
-#if defined(__NetBSD__) || defined(__FreeBSD__) || defined(__386BSD__) || \
-    defined(__OpenBSD__) || defined(__bsdi__)
-#include <sys/param.h> /* for the BSD define */
-/* if we have something newer than NET/2 we'll use uname(3) */
-#if (BSD > 199103)
-#include <sys/utsname.h>
-#endif /* BSD > 199103 */
-#endif /* __{Net,Free,Open,386}BSD__ || __bsdi__ */
-
-void version_local()
-{
-#ifdef __GNUC__
-#  ifdef NX_CURRENT_COMPILER_RELEASE
-    char compiler_name[80];
-#  endif
-#else
-#  if (defined( __SUNPRO_C))
-    char compiler_name[33];
-#  else
-#    if (defined( __HP_cc) || defined( __IBMC__))
-    char compiler_name[33];
-#    else
-#      if (defined( __DECC_VER))
-    char compiler_name[33];
-    int compiler_typ;
-#      else
-#        if ((defined(CRAY) || defined(cray)) && defined(_RELEASE))
-    char compiler_name[40];
-#        endif
-#      endif
-#    endif
-#  endif
+    char pathcomp[FILNAMSIZ];      /* path-component buffer */
+    char *pp, *cp=(char *)NULL;    /* character pointers */
+    char *lastsemi=(char *)NULL;   /* pointer to last semi-colon in pathcomp */
+#ifdef ACORN_FTYPE_NFS
+    char *lastcomma=(char *)NULL;  /* pointer to last comma in pathcomp */
+    RO_extra_block *ef_spark;      /* pointer Acorn FTYPE ef block */
 #endif
+    int killed_ddot = FALSE;       /* is set when skipping "../" pathcomp */
+    int error = MPN_OK;
+    register unsigned workch;      /* hold the character being tested */
 
-#ifdef BSD
-# if (BSD > 199103)
-    struct utsname u;
-    char os_name[40];
-# else
-# if defined(__NETBSD__))
-    static ZCONST char *netbsd[] = { "_ALPHA", "", "A", "B" };
-    char os_name[40];
-# endif /* __NETBSD__ */
-# endif /* BSD > 199103 */
-#else /* !BSD */
-#if ((defined(CRAY) || defined(cray)) && defined(_UNICOS))
-    char os_name[40];
-#endif /* (CRAY && defined(_UNICOS)) */
-#endif /* ?BSD */
 
-/* Define the compiler name and version string */
-#ifdef __GNUC__
-#  ifdef NX_CURRENT_COMPILER_RELEASE
-    sprintf(compiler_name, "NeXT DevKit %d.%02d (gcc " __VERSION__ ")",
-     NX_CURRENT_COMPILER_RELEASE/100, NX_CURRENT_COMPILER_RELEASE%100);
-#    define COMPILER_NAME compiler_name
-#  else
-#    define COMPILER_NAME "gcc " __VERSION__
-#  endif
-#else /* !__GNUC__ */
-#  if defined(__SUNPRO_C)
-    sprintf( compiler_name, "Sun C version %x", __SUNPRO_C);
-#    define COMPILER_NAME compiler_name
-#  else
-#    if (defined( __HP_cc))
-    if ((__HP_cc% 100) == 0)
-    {
-      sprintf( compiler_name, "HP C version A.%02d.%02d",
-       (__HP_cc/ 10000), ((__HP_cc% 10000)/ 100));
-    }
+/*---------------------------------------------------------------------------
+    Initialize various pointers and counters and stuff.
+  ---------------------------------------------------------------------------*/
+
+    if (G.pInfo->vollabel)
+        return MPN_VOL_LABEL;   /* can't set disk volume labels in Unix */
+
+    /* can create path as long as not just freshening, or if user told us */
+    G.create_dirs = (!uO.fflag || renamed);
+
+    G.created_dir = FALSE;      /* not yet */
+
+    /* user gave full pathname:  don't prepend rootpath */
+    G.renamed_fullpath = (renamed && (*G.filename == '/'));
+
+    if (checkdir(__G__ (char *)NULL, INIT) == MPN_NOMEM)
+        return MPN_NOMEM;       /* initialize path buffer, unless no memory */
+
+    *pathcomp = '\0';           /* initialize translation buffer */
+    pp = pathcomp;              /* point to translation buffer */
+    if (uO.jflag)               /* junking directories */
+        cp = (char *)strrchr(G.filename, '/');
+    if (cp == (char *)NULL)     /* no '/' or not junking dirs */
+        cp = G.filename;        /* point to internal zipfile-member pathname */
     else
-    {
-      sprintf( compiler_name, "HP C version A.%02d.%02d.%02d",
-       (__HP_cc/ 10000), ((__HP_cc% 10000)/ 100), (__HP_cc% 100));
+        ++cp;                   /* point to start of last component of path */
+
+/*---------------------------------------------------------------------------
+    Begin main loop through characters in filename.
+  ---------------------------------------------------------------------------*/
+
+    while ((workch = (uch)*cp++) != 0) {
+
+        switch (workch) {
+            case '/':             /* can assume -j flag not given */
+                *pp = '\0';
+                if (strcmp(pathcomp, ".") == 0) {
+                    /* don't bother appending "./" to the path */
+                    *pathcomp = '\0';
+                } else if (!uO.ddotflag && strcmp(pathcomp, "..") == 0) {
+                    /* "../" dir traversal detected, skip over it */
+                    *pathcomp = '\0';
+                    killed_ddot = TRUE;     /* set "show message" flag */
+                }
+                /* when path component is not empty, append it now */
+                if (*pathcomp != '\0' &&
+                    ((error = checkdir(__G__ pathcomp, APPEND_DIR))
+                     & MPN_MASK) > MPN_INF_TRUNC)
+                    return error;
+                pp = pathcomp;    /* reset conversion buffer for next piece */
+                lastsemi = (char *)NULL; /* leave direct. semi-colons alone */
+                break;
+
+#ifdef __CYGWIN__   /* Cygwin runs on Win32, apply FAT/NTFS filename rules */
+            case ':':         /* drive spec not stored, so no colon allowed */
+            case '\\':        /* '\\' may come as normal filename char (not */
+            case '<':         /*  dir sep char!) from unix-like file system */
+            case '>':         /* no redirection symbols allowed either */
+            case '|':         /* no pipe signs allowed */
+            case '"':         /* no double quotes allowed */
+            case '?':         /* no wildcards allowed */
+            case '*':
+                *pp++ = '_';  /* these rules apply equally to FAT and NTFS */
+                break;
+#endif
+            case ';':             /* VMS version (or DEC-20 attrib?) */
+                lastsemi = pp;
+                *pp++ = ';';      /* keep for now; remove VMS ";##" */
+                break;            /*  later, if requested */
+
+#ifdef ACORN_FTYPE_NFS
+            case ',':             /* NFS filetype extension */
+                lastcomma = pp;
+                *pp++ = ',';      /* keep for now; may need to remove */
+                break;            /*  later, if requested */
+#endif
+
+#ifdef MTS
+            case ' ':             /* change spaces to underscore under */
+                *pp++ = '_';      /*  MTS; leave as spaces under Unix */
+                break;
+#endif
+
+            default:
+                /* allow European characters in filenames: */
+                if (isprint(workch) || (128 <= workch && workch <= 254))
+                    *pp++ = (char)workch;
+        } /* end switch */
+
+    } /* end while loop */
+
+    /* Show warning when stripping insecure "parent dir" path components */
+    if (killed_ddot && QCOND2) {
+        Info(slide, 0, ((char *)slide,
+          "warning:  skipped \"../\" path component(s) in %s\n",
+          FnFilter1(G.filename)));
+        if (!(error & ~MPN_MASK))
+            error = (error & MPN_MASK) | PK_WARN;
     }
-#      define COMPILER_NAME compiler_name
-#    else
-#      if (defined( __DECC_VER))
-    sprintf( compiler_name, "DEC C version %c%d.%d-%03d",
-     ((compiler_typ = (__DECC_VER / 10000) % 10) == 6 ? 'T' :
-     (compiler_typ == 8 ? 'S' : 'V')),
-     __DECC_VER / 10000000,
-     (__DECC_VER % 10000000) / 100000, __DECC_VER % 1000);
-#        define COMPILER_NAME compiler_name
-#      else
-#        if ((defined(CRAY) || defined(cray)) && defined(_RELEASE))
-    sprintf(compiler_name, "cc version %d", _RELEASE);
-#          define COMPILER_NAME compiler_name
-#        else
-#          ifdef __IBMC__
-    sprintf( compiler_name, "IBM C version %d.%d.%d",
-     (__IBMC__/ 100), ((__IBMC__/ 10)% 10), (__IBMC__% 10));
-#            define COMPILER_NAME compiler_name
-#          else
-#            ifdef __VERSION__
-#              define COMPILER_NAME "cc " __VERSION__
-#            else
-#              define COMPILER_NAME "cc "
-#            endif
-#          endif
-#        endif
-#      endif
-#    endif
+
+/*---------------------------------------------------------------------------
+    Report if directory was created (and no file to create:  filename ended
+    in '/'), check name to be sure it exists, and combine path and name be-
+    fore exiting.
+  ---------------------------------------------------------------------------*/
+
+    if (G.filename[strlen(G.filename) - 1] == '/') {
+        checkdir(__G__ G.filename, GETPATH);
+        if (G.created_dir) {
+            if (QCOND2) {
+                Info(slide, 0, ((char *)slide, "   creating: %s\n",
+                  FnFilter1(G.filename)));
+            }
+#ifndef NO_CHMOD
+            /* set approx. dir perms (make sure can still read/write in dir) */
+            if (chmod(G.filename, (0xffff & G.pInfo->file_attr) | 0700))
+                perror("chmod (directory attributes) error");
+#endif
+            /* set dir time (note trailing '/') */
+            return (error & ~MPN_MASK) | MPN_CREATED_DIR;
+        }
+        /* dir existed already; don't look for data to extract */
+        return (error & ~MPN_MASK) | MPN_INF_SKIP;
+    }
+
+    *pp = '\0';                   /* done with pathcomp:  terminate it */
+
+    /* if not saving them, remove VMS version numbers (appended ";###") */
+    if (!uO.V_flag && lastsemi) {
+        pp = lastsemi + 1;
+        while (isdigit((uch)(*pp)))
+            ++pp;
+        if (*pp == '\0')          /* only digits between ';' and end:  nuke */
+            *lastsemi = '\0';
+    }
+
+#ifdef ACORN_FTYPE_NFS
+    /* translate Acorn filetype information if asked to do so */
+    if (uO.acorn_nfs_ext &&
+        (ef_spark = (RO_extra_block *)
+                    getRISCOSexfield(G.extra_field, G.lrec.extra_field_length))
+        != (RO_extra_block *)NULL)
+    {
+        /* file *must* have a RISC OS extra field */
+        long ft = (long)makelong(ef_spark->loadaddr);
+        /*32-bit*/
+        if (lastcomma) {
+            pp = lastcomma + 1;
+            while (isxdigit((uch)(*pp))) ++pp;
+            if (pp == lastcomma+4 && *pp == '\0') *lastcomma='\0'; /* nuke */
+        }
+        if ((ft & 1<<31)==0) ft=0x000FFD00;
+        sprintf(pathcomp+strlen(pathcomp), ",%03x", (int)(ft>>8) & 0xFFF);
+    }
+#endif /* ACORN_FTYPE_NFS */
+
+    if (*pathcomp == '\0') {
+        Info(slide, 1, ((char *)slide, "mapname:  conversion of %s failed\n",
+          FnFilter1(G.filename)));
+        return (error & ~MPN_MASK) | MPN_ERR_SKIP;
+    }
+
+    checkdir(__G__ pathcomp, APPEND_NAME);  /* returns 1 if truncated: care? */
+    checkdir(__G__ G.filename, GETPATH);
+
+    return error;
+
+} /* end function mapname() */
+
+
+
+
+#if 0  /*========== NOTES ==========*/
+
+  extract-to dir:      a:path/
+  buildpath:           path1/path2/ ...   (NULL-terminated)
+  pathcomp:                filename
+
+  mapname():
+    loop over chars in zipfile member name
+      checkdir(path component, COMPONENT | CREATEDIR) --> map as required?
+        (d:/tmp/unzip/)                    (disk:[tmp.unzip.)
+        (d:/tmp/unzip/jj/)                 (disk:[tmp.unzip.jj.)
+        (d:/tmp/unzip/jj/temp/)            (disk:[tmp.unzip.jj.temp.)
+    finally add filename itself and check for existence? (could use with rename)
+        (d:/tmp/unzip/jj/temp/msg.outdir)  (disk:[tmp.unzip.jj.temp]msg.outdir)
+    checkdir(name, GETPATH)     -->  copy path to name and free space
+
+#endif /* 0 */
+
+
+
+
+/***********************/
+/* Function checkdir() */
+/***********************/
+
+int checkdir(__G__ pathcomp, flag)
+    __GDEF
+    char *pathcomp;
+    int flag;
+/*
+ * returns:
+ *  MPN_OK          - no problem detected
+ *  MPN_INF_TRUNC   - (on APPEND_NAME) truncated filename
+ *  MPN_INF_SKIP    - path doesn't exist, not allowed to create
+ *  MPN_ERR_SKIP    - path doesn't exist, tried to create and failed; or path
+ *                    exists and is not a directory, but is supposed to be
+ *  MPN_ERR_TOOLONG - path is too long
+ *  MPN_NOMEM       - can't allocate memory for filename buffers
+ */
+{
+ /* static int rootlen = 0; */  /* length of rootpath */
+ /* static char *rootpath;  */  /* user's "extract-to" directory */
+ /* static char *buildpath; */  /* full path (so far) to extracted file */
+ /* static char *end;       */  /* pointer to end of buildpath ('\0') */
+
+#   define FN_MASK   7
+#   define FUNCTION  (flag & FN_MASK)
+
+
+
+/*---------------------------------------------------------------------------
+    APPEND_DIR:  append the path component to the path being built and check
+    for its existence.  If doesn't exist and we are creating directories, do
+    so for this one; else signal success or error as appropriate.
+  ---------------------------------------------------------------------------*/
+
+    if (FUNCTION == APPEND_DIR) {
+        int too_long = FALSE;
+#ifdef SHORT_NAMES
+        char *old_end = end;
+#endif
+
+        Trace((stderr, "appending dir segment [%s]\n", FnFilter1(pathcomp)));
+        while ((*G.end = *pathcomp++) != '\0')
+            ++G.end;
+#ifdef SHORT_NAMES   /* path components restricted to 14 chars, typically */
+        if ((G.end-old_end) > FILENAME_MAX)  /* GRR:  proper constant? */
+            *(G.end = old_end + FILENAME_MAX) = '\0';
+#endif
+
+        /* GRR:  could do better check, see if overrunning buffer as we go:
+         * check end-buildpath after each append, set warning variable if
+         * within 20 of FILNAMSIZ; then if var set, do careful check when
+         * appending.  Clear variable when begin new path. */
+
+        /* next check: need to append '/', at least one-char name, '\0' */
+        if ((G.end-G.buildpath) > FILNAMSIZ-3)
+            too_long = TRUE;                    /* check if extracting dir? */
+        if (SSTAT(G.buildpath, &G.statbuf)) {   /* path doesn't exist */
+            if (!G.create_dirs) { /* told not to create (freshening) */
+                free(G.buildpath);
+                return MPN_INF_SKIP;    /* path doesn't exist: nothing to do */
+            }
+            if (too_long) {
+                Info(slide, 1, ((char *)slide,
+                  "checkdir error:  path too long: %s\n",
+                  FnFilter1(G.buildpath)));
+                free(G.buildpath);
+                /* no room for filenames:  fatal */
+                return MPN_ERR_TOOLONG;
+            }
+            if (mkdir(G.buildpath, 0777) == -1) {   /* create the directory */
+                Info(slide, 1, ((char *)slide,
+                  "checkdir error:  cannot create %s\n\
+                 unable to process %s.\n",
+                  FnFilter2(G.buildpath), FnFilter1(G.filename)));
+                free(G.buildpath);
+                /* path didn't exist, tried to create, failed */
+                return MPN_ERR_SKIP;
+            }
+            G.created_dir = TRUE;
+        } else if (!S_ISDIR(G.statbuf.st_mode)) {
+            Info(slide, 1, ((char *)slide,
+              "checkdir error:  %s exists but is not directory\n\
+                 unable to process %s.\n",
+              FnFilter2(G.buildpath), FnFilter1(G.filename)));
+            free(G.buildpath);
+            /* path existed but wasn't dir */
+            return MPN_ERR_SKIP;
+        }
+        if (too_long) {
+            Info(slide, 1, ((char *)slide,
+              "checkdir error:  path too long: %s\n", FnFilter1(G.buildpath)));
+            free(G.buildpath);
+            /* no room for filenames:  fatal */
+            return MPN_ERR_TOOLONG;
+        }
+        *G.end++ = '/';
+        *G.end = '\0';
+        Trace((stderr, "buildpath now = [%s]\n", FnFilter1(G.buildpath)));
+        return MPN_OK;
+
+    } /* end if (FUNCTION == APPEND_DIR) */
+
+/*---------------------------------------------------------------------------
+    GETPATH:  copy full path to the string pointed at by pathcomp, and free
+    G.buildpath.
+  ---------------------------------------------------------------------------*/
+
+    if (FUNCTION == GETPATH) {
+        strcpy(pathcomp, G.buildpath);
+        Trace((stderr, "getting and freeing path [%s]\n",
+          FnFilter1(pathcomp)));
+        free(G.buildpath);
+        G.buildpath = G.end = (char *)NULL;
+        return MPN_OK;
+    }
+
+/*---------------------------------------------------------------------------
+    APPEND_NAME:  assume the path component is the filename; append it and
+    return without checking for existence.
+  ---------------------------------------------------------------------------*/
+
+    if (FUNCTION == APPEND_NAME) {
+#ifdef SHORT_NAMES
+        char *old_end = end;
+#endif
+
+        Trace((stderr, "appending filename [%s]\n", FnFilter1(pathcomp)));
+        while ((*G.end = *pathcomp++) != '\0') {
+            ++G.end;
+#ifdef SHORT_NAMES  /* truncate name at 14 characters, typically */
+            if ((G.end-old_end) > FILENAME_MAX)    /* GRR:  proper constant? */
+                *(G.end = old_end + FILENAME_MAX) = '\0';
+#endif
+            if ((G.end-G.buildpath) >= FILNAMSIZ) {
+                *--G.end = '\0';
+                Info(slide, 0x201, ((char *)slide,
+                  "checkdir warning:  path too long; truncating\n\
+                   %s\n                -> %s\n",
+                  FnFilter1(G.filename), FnFilter2(G.buildpath)));
+                return MPN_INF_TRUNC;   /* filename truncated */
+            }
+        }
+        Trace((stderr, "buildpath now = [%s]\n", FnFilter1(G.buildpath)));
+        /* could check for existence here, prompt for new name... */
+        return MPN_OK;
+    }
+
+/*---------------------------------------------------------------------------
+    INIT:  allocate and initialize buffer space for the file currently being
+    extracted.  If file was renamed with an absolute path, don't prepend the
+    extract-to path.
+  ---------------------------------------------------------------------------*/
+
+/* GRR:  for VMS and TOPS-20, add up to 13 to strlen */
+
+    if (FUNCTION == INIT) {
+        Trace((stderr, "initializing buildpath to "));
+#ifdef ACORN_FTYPE_NFS
+        if ((G.buildpath = (char *)malloc(strlen(G.filename)+G.rootlen+
+                                          (uO.acorn_nfs_ext ? 5 : 1)))
+#else
+        if ((G.buildpath = (char *)malloc(strlen(G.filename)+G.rootlen+1))
+#endif
+            == (char *)NULL)
+            return MPN_NOMEM;
+        if ((G.rootlen > 0) && !G.renamed_fullpath) {
+            strcpy(G.buildpath, G.rootpath);
+            G.end = G.buildpath + G.rootlen;
+        } else {
+            *G.buildpath = '\0';
+            G.end = G.buildpath;
+        }
+        Trace((stderr, "[%s]\n", FnFilter1(G.buildpath)));
+        return MPN_OK;
+    }
+
+/*---------------------------------------------------------------------------
+    ROOT:  if appropriate, store the path in rootpath and create it if
+    necessary; else assume it's a zipfile member and return.  This path
+    segment gets used in extracting all members from every zipfile specified
+    on the command line.
+  ---------------------------------------------------------------------------*/
+
+#if (!defined(SFX) || defined(SFX_EXDIR))
+    if (FUNCTION == ROOT) {
+        Trace((stderr, "initializing root path to [%s]\n",
+          FnFilter1(pathcomp)));
+        if (pathcomp == (char *)NULL) {
+            G.rootlen = 0;
+            return MPN_OK;
+        }
+        if (G.rootlen > 0)      /* rootpath was already set, nothing to do */
+            return MPN_OK;
+        if ((G.rootlen = strlen(pathcomp)) > 0) {
+            char *tmproot;
+
+            if ((tmproot = (char *)malloc(G.rootlen+2)) == (char *)NULL) {
+                G.rootlen = 0;
+                return MPN_NOMEM;
+            }
+            strcpy(tmproot, pathcomp);
+            if (tmproot[G.rootlen-1] == '/') {
+                tmproot[--G.rootlen] = '\0';
+            }
+            if (G.rootlen > 0 && (SSTAT(tmproot, &G.statbuf) ||
+                                  !S_ISDIR(G.statbuf.st_mode)))
+            {   /* path does not exist */
+                if (!G.create_dirs /* || iswild(tmproot) */ ) {
+                    free(tmproot);
+                    G.rootlen = 0;
+                    /* skip (or treat as stored file) */
+                    return MPN_INF_SKIP;
+                }
+                /* create the directory (could add loop here scanning tmproot
+                 * to create more than one level, but why really necessary?) */
+                if (mkdir(tmproot, 0777) == -1) {
+                    Info(slide, 1, ((char *)slide,
+                      "checkdir:  cannot create extraction directory: %s\n",
+                      FnFilter1(tmproot)));
+                    free(tmproot);
+                    G.rootlen = 0;
+                    /* path didn't exist, tried to create, and failed: */
+                    /* file exists, or 2+ subdir levels required */
+                    return MPN_ERR_SKIP;
+                }
+            }
+            tmproot[G.rootlen++] = '/';
+            tmproot[G.rootlen] = '\0';
+            if ((G.rootpath = (char *)realloc(tmproot, G.rootlen+1)) == NULL) {
+                free(tmproot);
+                G.rootlen = 0;
+                return MPN_NOMEM;
+            }
+            Trace((stderr, "rootpath now = [%s]\n", FnFilter1(G.rootpath)));
+        }
+        return MPN_OK;
+    }
+#endif /* !SFX || SFX_EXDIR */
+
+/*---------------------------------------------------------------------------
+    END:  free rootpath, immediately prior to program exit.
+  ---------------------------------------------------------------------------*/
+
+    if (FUNCTION == END) {
+        Trace((stderr, "freeing rootpath\n"));
+        if (G.rootlen > 0) {
+            free(G.rootpath);
+            G.rootlen = 0;
+        }
+        return MPN_OK;
+    }
+
+    return MPN_INVALID; /* should never reach */
+
+} /* end function checkdir() */
+
+
+
+
+
+#ifdef NO_MKDIR
+
+/********************/
+/* Function mkdir() */
+/********************/
+
+int mkdir(path, mode)
+    ZCONST char *path;
+    int mode;   /* ignored */
+/*
+ * returns:   0 - successful
+ *           -1 - failed (errno not set, however)
+ */
+{
+    char command[FILNAMSIZ+40]; /* buffer for system() call */
+
+    /* GRR 930416:  added single quotes around path to avoid bug with
+     * creating directories with ampersands in name; not yet tested */
+    sprintf(command, "IFS=\" \t\n\" /bin/mkdir '%s' 2>/dev/null", path);
+    if (system(command))
+        return -1;
+    return 0;
+}
+
+#endif /* NO_MKDIR */
+
+
+
+
+#if (!defined(MTS) || defined(SET_DIR_ATTRIB))
+static int get_extattribs OF((__GPRO__ iztimes *pzt, ush z_uidgid[2]));
+
+static int get_extattribs(__G__ pzt, z_uidgid)
+    __GDEF
+    iztimes *pzt;
+    ush z_uidgid[2];
+{
+/*---------------------------------------------------------------------------
+    Convert from MSDOS-format local time and date to Unix-format 32-bit GMT
+    time:  adjust base year from 1980 to 1970, do usual conversions from
+    yy/mm/dd hh:mm:ss to elapsed seconds, and account for timezone and day-
+    light savings time differences.  If we have a Unix extra field, however,
+    we're laughing:  both mtime and atime are ours.  On the other hand, we
+    then have to check for restoration of UID/GID.
+  ---------------------------------------------------------------------------*/
+    int have_uidgid_flg;
+    unsigned eb_izux_flg;
+
+    eb_izux_flg = (G.extra_field ? ef_scan_for_izux(G.extra_field,
+                   G.lrec.extra_field_length, 0, G.lrec.last_mod_dos_datetime,
+#ifdef IZ_CHECK_TZ
+                   (G.tz_is_valid ? pzt : NULL),
+#else
+                   pzt,
+#endif
+                   z_uidgid) : 0);
+    if (eb_izux_flg & EB_UT_FL_MTIME) {
+        TTrace((stderr, "\nget_extattribs:  Unix e.f. modif. time = %ld\n",
+          pzt->mtime));
+    } else {
+        pzt->mtime = dos_to_unix_time(G.lrec.last_mod_dos_datetime);
+    }
+    if (eb_izux_flg & EB_UT_FL_ATIME) {
+        TTrace((stderr, "get_extattribs:  Unix e.f. access time = %ld\n",
+          pzt->atime));
+    } else {
+        pzt->atime = pzt->mtime;
+        TTrace((stderr, "\nget_extattribs:  modification/access times = %ld\n",
+          pzt->mtime));
+    }
+
+    /* if -X option was specified and we have UID/GID info, restore it */
+    have_uidgid_flg =
+#ifdef RESTORE_UIDGID
+            (uO.X_flag && (eb_izux_flg & EB_UX2_VALID));
+#else
+            0;
+#endif
+    return have_uidgid_flg;
+}
+#endif /* !MTS || SET_DIR_ATTRIB */
+
+
+
+#ifndef MTS
+
+/****************************/
+/* Function close_outfile() */
+/****************************/
+
+void close_outfile(__G)    /* GRR: change to return PK-style warning level */
+    __GDEF
+{
+    union {
+        iztimes t3;             /* mtime, atime, ctime */
+        ztimbuf t2;             /* modtime, actime */
+    } zt;
+    ush z_uidgid[2];
+    int have_uidgid_flg;
+
+    fclose(G.outfile);
+
+/*---------------------------------------------------------------------------
+    If symbolic links are supported, allocate storage for a symlink control
+    structure, put the uncompressed "data" and other required info in it, and
+    add the structure to the "deferred symlinks" chain.  Since we know it's a
+    symbolic link to start with, we shouldn't have to worry about overflowing
+    unsigned ints with unsigned longs.
+  ---------------------------------------------------------------------------*/
+
+#ifdef SYMLINKS
+    if (G.symlnk) {
+        unsigned ucsize = (unsigned)G.lrec.ucsize;
+        extent slnk_entrysize = sizeof(slinkentry) + ucsize +
+                                strlen(G.filename);
+        slinkentry *slnk_entry;
+
+        if ((unsigned)slnk_entrysize < ucsize) {
+            Info(slide, 0x201, ((char *)slide,
+              "warning:  symbolic link (%s) failed: mem alloc overflow\n",
+              FnFilter1(G.filename)));
+            return;
+        }
+
+        if ((slnk_entry = (slinkentry *)malloc(slnk_entrysize)) == NULL) {
+            Info(slide, 0x201, ((char *)slide,
+              "warning:  symbolic link (%s) failed: no mem\n",
+              FnFilter1(G.filename)));
+            return;
+        }
+        slnk_entry->next = NULL;
+        slnk_entry->targetlen = ucsize;
+        slnk_entry->attriblen = 0;      /* don't set attributes for symlinks */
+        slnk_entry->target = slnk_entry->buf;
+        slnk_entry->fname = slnk_entry->target + ucsize + 1;
+        strcpy(slnk_entry->fname, G.filename);
+
+        /* reopen the "link data" file for reading */
+        G.outfile = fopen(G.filename, FOPR);
+
+        if (!G.outfile ||
+            fread(slnk_entry->target, 1, ucsize, G.outfile) != (int)ucsize)
+        {
+            Info(slide, 0x201, ((char *)slide,
+              "warning:  symbolic link (%s) failed\n",
+              FnFilter1(G.filename)));
+            free(slnk_entry);
+            fclose(G.outfile);
+            return;
+        }
+        fclose(G.outfile);                  /* close "link" file for good... */
+        slnk_entry->target[ucsize] = '\0';
+        if (QCOND2)
+            Info(slide, 0, ((char *)slide, "-> %s ",
+              FnFilter1(slnk_entry->target)));
+        /* add this symlink record to the list of deferred symlinks */
+        if (G.slink_last != NULL)
+            G.slink_last->next = slnk_entry;
+        else
+            G.slink_head = slnk_entry;
+        G.slink_last = slnk_entry;
+        return;
+    }
+#endif /* SYMLINKS */
+
+#ifdef QLZIP
+    if (G.extra_field) {
+        static void qlfix OF((__GPRO__ uch *ef_ptr, unsigned ef_len));
+
+        qlfix(__G__ G.extra_field, G.lrec.extra_field_length);
+    }
+#endif
+
+    have_uidgid_flg = get_extattribs(__G__ &(zt.t3), z_uidgid);
+
+    /* if -X option was specified and we have UID/GID info, restore it */
+    if (have_uidgid_flg) {
+        TTrace((stderr, "close_outfile:  restoring Unix UID/GID info\n"));
+        if (chown(G.filename, (uid_t)z_uidgid[0], (gid_t)z_uidgid[1]))
+        {
+            if (uO.qflag)
+                Info(slide, 0x201, ((char *)slide,
+                  "warning:  cannot set UID %d and/or GID %d for %s\n",
+                  z_uidgid[0], z_uidgid[1], FnFilter1(G.filename)));
+            else
+                Info(slide, 0x201, ((char *)slide,
+                  " (warning) cannot set UID %d and/or GID %d",
+                  z_uidgid[0], z_uidgid[1]));
+        }
+    }
+
+    /* set the file's access and modification times */
+    if (utime(G.filename, &(zt.t2))) {
+#ifdef AOS_VS
+        if (uO.qflag)
+            Info(slide, 0x201, ((char *)slide, "... cannot set time for %s\n",
+              FnFilter1(G.filename)));
+        else
+            Info(slide, 0x201, ((char *)slide, "... cannot set time"));
+#else
+        if (uO.qflag)
+            Info(slide, 0x201, ((char *)slide,
+              "warning:  cannot set times for %s\n", FnFilter1(G.filename)));
+        else
+            Info(slide, 0x201, ((char *)slide,
+              " (warning) cannot set times"));
+#endif /* ?AOS_VS */
+    }
+
+/*---------------------------------------------------------------------------
+    Change the file permissions from default ones to those stored in the
+    zipfile.
+  ---------------------------------------------------------------------------*/
+
+#ifndef NO_CHMOD
+    if (chmod(G.filename, 0xffff & G.pInfo->file_attr))
+        perror("chmod (file attributes) error");
+#endif
+
+} /* end function close_outfile() */
+
+#endif /* !MTS */
+
+
+#ifdef SET_DIR_ATTRIB
+/* messages of code for setting directory attributes */
+static ZCONST char Far DirlistUidGidFailed[] =
+  "warning:  cannot set UID %d and/or GID %d for %s\n";
+static ZCONST char Far DirlistUtimeFailed[] =
+  "warning:  cannot set modification, access times for %s\n";
+#  ifndef NO_CHMOD
+  static ZCONST char Far DirlistChmodFailed[] =
+    "warning:  cannot set permissions for %s\n";
+#  endif
+
+
+int defer_dir_attribs(__G__ pd)
+    __GDEF
+    direntry **pd;
+{
+    uxdirattr *d_entry;
+
+    d_entry = (uxdirattr *)malloc(sizeof(uxdirattr) + strlen(G.filename));
+    *pd = (direntry *)d_entry;
+    if (d_entry == (uxdirattr *)NULL) {
+        return PK_MEM;
+    }
+    d_entry->fn = d_entry->fnbuf;
+    strcpy(d_entry->fn, G.filename);
+
+    d_entry->perms = G.pInfo->file_attr;
+
+    d_entry->have_uidgid = get_extattribs(__G__ &(d_entry->u.t3),
+                                          d_entry->uidgid);
+    return PK_OK;
+} /* end function defer_dir_attribs() */
+
+
+int set_direc_attribs(__G__ d)
+    __GDEF
+    direntry *d;
+{
+    int errval = PK_OK;
+
+    if (UxAtt(d)->have_uidgid &&
+        chown(UxAtt(d)->fn, (uid_t)UxAtt(d)->uidgid[0],
+              (gid_t)UxAtt(d)->uidgid[1]))
+    {
+        Info(slide, 0x201, ((char *)slide,
+          LoadFarString(DirlistUidGidFailed),
+          UxAtt(d)->uidgid[0], UxAtt(d)->uidgid[1], FnFilter1(d->fn)));
+        if (!errval)
+            errval = PK_WARN;
+    }
+    if (utime(d->fn, &UxAtt(d)->u.t2)) {
+        Info(slide, 0x201, ((char *)slide,
+          LoadFarString(DirlistUtimeFailed), FnFilter1(d->fn)));
+        if (!errval)
+            errval = PK_WARN;
+    }
+#ifndef NO_CHMOD
+    if (chmod(d->fn, 0xffff & UxAtt(d)->perms)) {
+        Info(slide, 0x201, ((char *)slide,
+          LoadFarString(DirlistChmodFailed), FnFilter1(d->fn)));
+        /* perror("chmod (file attributes) error"); */
+        if (!errval)
+            errval = PK_WARN;
+    }
+#endif /* !NO_CHMOD */
+    return errval;
+} /* end function set_direc_attribs() */
+
+#endif /* SET_DIR_ATTRIB */
+
+
+
+
+#ifdef TIMESTAMP
+
+/***************************/
+/*  Function stamp_file()  */
+/***************************/
+
+int stamp_file(fname, modtime)
+    ZCONST char *fname;
+    time_t modtime;
+{
+    ztimbuf tp;
+
+    tp.modtime = tp.actime = modtime;
+    return (utime(fname, &tp));
+
+} /* end function stamp_file() */
+
+#endif /* TIMESTAMP */
+
+
+
+
+#ifndef SFX
+
+/************************/
+/*  Function version()  */
+/************************/
+
+void version(__G)
+    __GDEF
+{
+#if (defined(__GNUC__) && defined(NX_CURRENT_COMPILER_RELEASE))
+    char cc_namebuf[40];
+    char cc_versbuf[40];
+#else
+#if (defined(CRAY) && defined(_RELEASE))
+    char cc_versbuf[40];
+#endif
+#endif
+#if ((defined(CRAY) || defined(cray)) && defined(_UNICOS))
+    char os_namebuf[40];
+#else
+#if defined(__NetBSD__)
+    char os_namebuf[40];
+#endif
+#endif
+
+    /* Pyramid, NeXT have problems with huge macro expansion, too:  no Info() */
+    sprintf((char *)slide, LoadFarString(CompiledWith),
+
+#ifdef __GNUC__
+#  ifdef NX_CURRENT_COMPILER_RELEASE
+      (sprintf(cc_namebuf, "NeXT DevKit %d.%02d ",
+        NX_CURRENT_COMPILER_RELEASE/100, NX_CURRENT_COMPILER_RELEASE%100),
+       cc_namebuf),
+      (strlen(__VERSION__) > 8)? "(gcc)" :
+        (sprintf(cc_versbuf, "(gcc %s)", __VERSION__), cc_versbuf),
+#  else
+      "gcc ", __VERSION__,
+#  endif
+#else
+#  if defined(CRAY) && defined(_RELEASE)
+      "cc ", (sprintf(cc_versbuf, "version %d", _RELEASE), cc_versbuf),
+#  else
+#  ifdef __VERSION__
+#   ifndef IZ_CC_NAME
+#    define IZ_CC_NAME "cc "
+#   endif
+      IZ_CC_NAME, __VERSION__
+#  else
+#   ifndef IZ_CC_NAME
+#    define IZ_CC_NAME "cc"
+#   endif
+      IZ_CC_NAME, "",
+#  endif
 #  endif
 #endif /* ?__GNUC__ */
 
+#ifndef IZ_OS_NAME
+#  define IZ_OS_NAME "Unix"
+#endif
+      IZ_OS_NAME,
 
-/* Define the name to use for the OS we're compiling on */
 #if defined(sgi) || defined(__sgi)
-#  define OS_NAME "Silicon Graphics IRIX"
+      " (Silicon Graphics IRIX)",
 #else
 #ifdef sun
 #  ifdef sparc
 #    ifdef __SVR4
-#      define OS_NAME "Sun SPARC/Solaris"
+      " (Sun SPARC/Solaris)",
 #    else /* may or may not be SunOS */
-#      define OS_NAME "Sun SPARC"
+      " (Sun SPARC)",
 #    endif
 #  else
 #  if defined(sun386) || defined(i386)
-#    define OS_NAME "Sun 386i"
+      " (Sun 386i)",
 #  else
 #  if defined(mc68020) || defined(__mc68020__)
-#    define OS_NAME "Sun 3"
+      " (Sun 3)",
 #  else /* mc68010 or mc68000:  Sun 2 or earlier */
-#    define OS_NAME "Sun 2"
+      " (Sun 2)",
 #  endif
 #  endif
 #  endif
 #else
 #ifdef __hpux
-#  define OS_NAME "HP-UX"
+      " (HP/UX)",
 #else
 #ifdef __osf__
-#  define OS_NAME "DEC OSF/1"
+      " (DEC OSF/1)",
 #else
 #ifdef _AIX
-#  define OS_NAME "IBM AIX"
+      " (IBM AIX)",
 #else
 #ifdef aiws
-#  define OS_NAME "IBM RT/AIX"
+      " (IBM RT/AIX)",
 #else
 #if defined(CRAY) || defined(cray)
 #  ifdef _UNICOS
-    sprintf(os_name, "Cray UNICOS release %d", _UNICOS);
-#    define OS_NAME os_name
+      (sprintf(os_namebuf, " (Cray UNICOS release %d)", _UNICOS), os_namebuf),
 #  else
-#    define OS_NAME "Cray UNICOS"
+      " (Cray UNICOS)",
 #  endif
 #else
 #if defined(uts) || defined(UTS)
-#  define OS_NAME "Amdahl UTS"
+      " (Amdahl UTS)",
 #else
 #ifdef NeXT
 #  ifdef mc68000
-#    define OS_NAME "NeXTStep/black"
+      " (NeXTStep/black)",
 #  else
-#    define OS_NAME "NeXTStep for Intel"
+      " (NeXTStep for Intel)",
 #  endif
-#else
-#if defined(linux) || defined(__linux__)
+#else              /* the next dozen or so are somewhat order-dependent */
+#ifdef LINUX
 #  ifdef __ELF__
-#    define OS_NAME "Linux ELF"
+      " (Linux ELF)",
 #  else
-#    define OS_NAME "Linux a.out"
+      " (Linux a.out)",
 #  endif
 #else
 #ifdef MINIX
-#  define OS_NAME "Minix"
+      " (Minix)",
 #else
 #ifdef M_UNIX
-#  define OS_NAME "SCO Unix"
+      " (SCO Unix)",
 #else
 #ifdef M_XENIX
-#  define OS_NAME "SCO Xenix"
+      " (SCO Xenix)",
 #else
-#ifdef BSD
-# if (BSD > 199103)
-#    define OS_NAME os_name
-    uname(&u);
-    sprintf(os_name, "%s %s", u.sysname, u.release);
-# else
-# ifdef __NetBSD__
-#   define OS_NAME os_name
-#   ifdef NetBSD0_8
-      sprintf(os_name, "NetBSD 0.8%s", netbsd[NetBSD0_8]);
-#   else
-#   ifdef NetBSD0_9
-      sprintf(os_name, "NetBSD 0.9%s", netbsd[NetBSD0_9]);
-#   else
-#   ifdef NetBSD1_0
-      sprintf(os_name, "NetBSD 1.0%s", netbsd[NetBSD1_0]);
-#   endif /* NetBSD1_0 */
-#   endif /* NetBSD0_9 */
-#   endif /* NetBSD0_8 */
-# else
-# ifdef __FreeBSD__
-#    define OS_NAME "FreeBSD 1.x"
-# else
-# ifdef __bsdi__
-#    define OS_NAME "BSD/386 1.0"
-# else
-# ifdef __386BSD__
-#    define OS_NAME "386BSD"
-# else
-#    define OS_NAME "Unknown BSD"
-# endif /* __386BSD__ */
-# endif /* __bsdi__ */
-# endif /* FreeBSD */
-# endif /* NetBSD */
-# endif /* BSD > 199103 */
+#ifdef __NetBSD__
+#  ifdef NetBSD0_8
+      (sprintf(os_namebuf, " (NetBSD 0.8%c)", (char)(NetBSD0_8 - 1 + 'A')),
+       os_namebuf),
+#  else
+#  ifdef NetBSD0_9
+      (sprintf(os_namebuf, " (NetBSD 0.9%c)", (char)(NetBSD0_9 - 1 + 'A')),
+       os_namebuf),
+#  else
+#  ifdef NetBSD1_0
+      (sprintf(os_namebuf, " (NetBSD 1.0%c)", (char)(NetBSD1_0 - 1 + 'A')),
+       os_namebuf),
+#  else
+      (BSD4_4 == 0.5)? " (NetBSD before 0.9)" : " (NetBSD 1.1 or later)",
+#  endif
+#  endif
+#  endif
+#else
+#ifdef __FreeBSD__
+      (BSD4_4 == 0.5)? " (FreeBSD 1.x)" : " (FreeBSD 2.0 or later)",
+#else
+#ifdef __bsdi__
+      (BSD4_4 == 0.5)? " (BSD/386 1.0)" : " (BSD/386 1.1 or later)",
+#else
+#ifdef __386BSD__
+      (BSD4_4 == 1)? " (386BSD, post-4.4 release)" : " (386BSD)",
 #else
 #ifdef __CYGWIN__
-#  define OS_NAME "Cygwin"
+      " (Cygwin)",
 #else
 #if defined(i686) || defined(__i686) || defined(__i686__)
-#  define OS_NAME "Intel 686"
+      " (Intel 686)",
 #else
 #if defined(i586) || defined(__i586) || defined(__i586__)
-#  define OS_NAME "Intel 586"
+      " (Intel 586)",
 #else
 #if defined(i486) || defined(__i486) || defined(__i486__)
-#  define OS_NAME "Intel 486"
+      " (Intel 486)",
 #else
 #if defined(i386) || defined(__i386) || defined(__i386__)
-#  define OS_NAME "Intel 386"
+      " (Intel 386)",
 #else
 #ifdef pyr
-#  define OS_NAME "Pyramid"
+      " (Pyramid)",
 #else
-#if defined(ultrix) || defined(__ultrix)
-#  if defined(mips) || defined(__mips)
-#    define OS_NAME "DEC/MIPS"
+#ifdef ultrix
+#  ifdef mips
+      " (DEC/MIPS)",
 #  else
-#  if defined(vax) || defined(__vax)
-#    define OS_NAME "DEC/VAX"
+#  ifdef vax
+      " (DEC/VAX)",
 #  else /* __alpha? */
-#    define OS_NAME "DEC/Alpha"
+      " (DEC/Alpha)",
 #  endif
 #  endif
 #else
 #ifdef gould
-#  define OS_NAME "Gould"
+      " (Gould)",
 #else
 #ifdef MTS
-#  define OS_NAME "MTS"
+      " (MTS)",
 #else
 #ifdef __convexc__
-#  define OS_NAME "Convex"
+      " (Convex)",
 #else
 #ifdef __QNX__
-#  define OS_NAME "QNX 4"
+      " (QNX 4)",
 #else
 #ifdef __QNXNTO__
-#  define OS_NAME "QNX Neutrino"
+      " (QNX Neutrino)",
 #else
-#ifdef __APPLE__
-#  ifdef __i386__
-#    define OS_NAME "Mac OS X Intel"
-#  else /* __i386__ */
-#    ifdef __ppc__
-#      define OS_NAME "Mac OS X PowerPC"
-#    else /* __ppc__ */
-#      ifdef __ppc64__
-#        define OS_NAME "Mac OS X PowerPC64"
-#      else /* __ppc64__ */
-#        define OS_NAME "Mac OS X"
-#      endif /* __ppc64__ */
-#    endif /* __ppc__ */
-#  endif /* __i386__ */
+#ifdef Lynx
+      " (LynxOS)",
 #else
-#  define OS_NAME "Unknown"
-#endif /* Apple */
+      "",
+#endif /* Lynx */
 #endif /* QNX Neutrino */
 #endif /* QNX 4 */
 #endif /* Convex */
@@ -1003,7 +1437,10 @@ void version_local()
 #endif /* 586 */
 #endif /* 686 */
 #endif /* Cygwin */
-#endif /* BSD */
+#endif /* 386BSD */
+#endif /* BSDI BSD/386 */
+#endif /* NetBSD */
+#endif /* FreeBSD */
 #endif /* SCO Xenix */
 #endif /* SCO Unix */
 #endif /* Minix */
@@ -1014,87 +1451,178 @@ void version_local()
 #endif /* RT/AIX */
 #endif /* AIX */
 #endif /* OSF/1 */
-#endif /* HP-UX */
+#endif /* HP/UX */
 #endif /* Sun */
 #endif /* SGI */
 
-
-/* Define the compile date string */
 #ifdef __DATE__
-#  define COMPILE_DATE " on " __DATE__
+      " on ", __DATE__
 #else
-#  define COMPILE_DATE ""
+      "", ""
 #endif
+    );
 
-    printf("Compiled with %s for Unix (%s)%s.\n\n",
-           COMPILER_NAME, OS_NAME, COMPILE_DATE);
+    (*G.message)((zvoid *)&G, slide, (ulg)strlen((char *)slide), 0);
 
-} /* end function version_local() */
+} /* end function version() */
+
+#endif /* !SFX */
 
 
-/* 2006-03-23 SMS.
- * Emergency replacement for strerror().  (Useful on SunOS 4.*.)
- * Enable by specifying "LOCAL_UNZIP=-DNEED_STRERROR=1" on the "make"
- * command line.
+
+
+#ifdef QLZIP
+
+struct qdirect  {
+    long            d_length __attribute__ ((packed));  /* file length */
+    unsigned char   d_access __attribute__ ((packed));  /* file access type */
+    unsigned char   d_type __attribute__ ((packed));    /* file type */
+    long            d_datalen __attribute__ ((packed)); /* data length */
+    long            d_reserved __attribute__ ((packed));/* Unused */
+    short           d_szname __attribute__ ((packed));  /* size of name */
+    char            d_name[36] __attribute__ ((packed));/* name area */
+    long            d_update __attribute__ ((packed));  /* last update */
+    long            d_refdate __attribute__ ((packed));
+    long            d_backup __attribute__ ((packed));   /* EOD */
+};
+
+#define LONGID  "QDOS02"
+#define EXTRALEN (sizeof(struct qdirect) + 8)
+#define JBLONGID    "QZHD"
+#define JBEXTRALEN  (sizeof(jbextra)  - 4 * sizeof(char))
+
+typedef struct {
+    char        eb_header[4] __attribute__ ((packed));  /* place_holder */
+    char        longid[8] __attribute__ ((packed));
+    struct      qdirect     header __attribute__ ((packed));
+} qdosextra;
+
+typedef struct {
+    char        eb_header[4];                           /* place_holder */
+    char        longid[4];
+    struct      qdirect     header;
+} jbextra;
+
+
+
+/*  The following two functions SH() and LG() convert big-endian short
+ *  and long numbers into native byte order.  They are some kind of
+ *  counterpart to the generic UnZip's makeword() and makelong() functions.
  */
-
-#ifdef NEED_STRERROR
-
-char *strerror( err)
-  int err;
+static ush SH(ush val)
 {
-    extern char *sys_errlist[];
-    extern int sys_nerr;
+    uch swapbuf[2];
 
-    static char no_msg[ 64];
-
-    if ((err >= 0) && (err < sys_nerr))
-    {
-        return sys_errlist[ err];
-    }
-    else
-    {
-        sprintf( no_msg, "(no message, code = %d.)", err);
-        return no_msg;
-    }
+    swapbuf[1] = (uch)(val & 0xff);
+    swapbuf[0] = (uch)(val >> 8);
+    return (*(ush *)swapbuf);
 }
 
-#endif /* def NEED_STRERROR */
 
 
-/* 2006-03-23 SMS.
- * Emergency replacement for memmove().  (Useful on SunOS 4.*.)
- * Enable by specifying "LOCAL_UNZIP=-DNEED_MEMMOVE=1" on the "make"
- * command line.
- */
-
-#ifdef NEED_MEMMOVE
-
-/* memmove.c -- copy memory.
-   Copy LENGTH bytes from SOURCE to DEST.  Does not null-terminate.
-   In the public domain.
-   By David MacKenzie <djm@gnu.ai.mit.edu>.
-   Adjusted by SMS.
-*/
-
-void *memmove(dest0, source0, length)
-  void *dest0;
-  void const *source0;
-  size_t length;
+static ulg LG(ulg val)
 {
-    char *dest = dest0;
-    char const *source = source0;
-    if (source < dest)
-        /* Moving from low mem to hi mem; start at end.  */
-        for (source += length, dest += length; length; --length)
-            *--dest = *--source;
-    else if (source != dest)
-    {
-        /* Moving from hi mem to low mem; start at beginning.  */
-        for (; length; --length)
-            *dest++ = *source++;
-    }
-    return dest0;
+    /*  convert the big-endian unsigned long number `val' to the machine
+     *  dependant representation
+     */
+    ush swapbuf[2];
+
+    swapbuf[1] = SH((ush)(val & 0xffff));
+    swapbuf[0] = SH((ush)(val >> 16));
+    return (*(ulg *)swapbuf);
 }
 
-#endif /* def NEED_MEMMOVE */
+
+
+static void qlfix(__G__ ef_ptr, ef_len)
+    __GDEF
+    uch *ef_ptr;
+    unsigned ef_len;
+{
+    while (ef_len >= EB_HEADSIZE)
+    {
+        unsigned    eb_id  = makeword(EB_ID + ef_ptr);
+        unsigned    eb_len = makeword(EB_LEN + ef_ptr);
+
+        if (eb_len > (ef_len - EB_HEADSIZE)) {
+            /* discovered some extra field inconsistency! */
+            Trace((stderr,
+              "qlfix: block length %u > rest ef_size %u\n", eb_len,
+              ef_len - EB_HEADSIZE));
+            break;
+        }
+
+        switch (eb_id) {
+          case EF_QDOS:
+          {
+            struct _ntc_
+            {
+                long id;
+                long dlen;
+            } ntc;
+            long dlen = 0;
+
+            qdosextra   *extra = (qdosextra *)ef_ptr;
+            jbextra     *jbp   = (jbextra   *)ef_ptr;
+
+            if (!strncmp(extra->longid, LONGID, strlen(LONGID)))
+            {
+                if (eb_len != EXTRALEN)
+                    if (uO.qflag)
+                        Info(slide, 0x201, ((char *)slide,
+                          "warning:  invalid length in Qdos field for %s\n",
+                          FnFilter1(G.filename)));
+                    else
+                        Info(slide, 0x201, ((char *)slide,
+                          "warning:  invalid length in Qdos field"));
+
+                if (extra->header.d_type)
+                {
+                    dlen = extra->header.d_datalen;
+                }
+            }
+
+            if (!strncmp(jbp->longid, JBLONGID, strlen(JBLONGID)))
+            {
+                if (eb_len != JBEXTRALEN)
+                    if (uO.qflag)
+                        Info(slide, 0x201, ((char *)slide,
+                          "warning:  invalid length in QZ field for %s\n",
+                          FnFilter1(G.filename)));
+                    else
+                        Info(slide, 0x201, ((char *)slide,
+                          "warning:  invalid length in QZ field"));
+                if(jbp->header.d_type)
+                {
+                    dlen = jbp->header.d_datalen;
+                }
+            }
+
+            if ((long)LG(dlen) > 0)
+            {
+                G.outfile = fopen(G.filename,"r+");
+                fseek(G.outfile, -8, SEEK_END);
+                fread(&ntc, 8, 1, G.outfile);
+                if(ntc.id != *(long *)"XTcc")
+                {
+                    ntc.id = *(long *)"XTcc";
+                    ntc.dlen = dlen;
+                    fwrite (&ntc, 8, 1, G.outfile);
+                }
+                Info(slide, 0x201, ((char *)slide, "QData = %d", LG(dlen)));
+                fclose(G.outfile);
+            }
+            return;     /* finished, cancel further extra field scanning */
+          }
+
+          default:
+            Trace((stderr,"qlfix: unknown extra field block, ID=%d\n",
+               eb_id));
+        }
+
+        /* Skip this extra field block */
+        ef_ptr += (eb_len + EB_HEADSIZE);
+        ef_len -= (eb_len + EB_HEADSIZE);
+    }
+}
+#endif /* QLZIP */

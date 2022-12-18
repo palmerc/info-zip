@@ -1,938 +1,1140 @@
 /*
-  Copyright (c) 1990-2002 Info-ZIP.  All rights reserved.
+  Copyright (c) 1990-2004 Info-ZIP.  All rights reserved.
 
   See the accompanying file LICENSE, version 2000-Apr-09 or later
-  (the contents of which are also included in zip.h) for terms of use.
+  (the contents of which are also included in unzip.h) for terms of use.
   If, for some reason, all these files are missing, the Info-ZIP license
   also may be found at:  ftp://ftp.info-zip.org/pub/infozip/license.html
 */
-/*
+/*---------------------------------------------------------------------------
 
- This BeOS-specific file is based on unix.c in the unix directory; changes
- by Chris Herborth (chrish@pobox.com).
+  beos.c
 
-*/
+  BeOS-specific routines for use with Info-ZIP's UnZip 5.30 and later.
+  (based on unix/unix.c)
 
-#include "zip.h"
+  Contains:  do_wild()           <-- generic enough to put in fileio.c?
+             mapattr()
+             mapname()
+             checkdir()
+             close_outfile()
+             defer_dir_attribs()
+             set_direc_attribs()
+             stamp_file()
+             version()
+             scanBeOSexfield()
+             set_file_attrs()
+             setBeOSexfield()
+             printBeOSexfield()
+             assign_MIME()
 
-#ifndef UTIL    /* the companion #endif is a bit of ways down ... */
+  ---------------------------------------------------------------------------*/
 
-#include <time.h>
-#include <dirent.h>
-#include <errno.h>
+
+#define UNZIP_INTERNAL
+#include "unzip.h"
+
+#include "beos.h"
+#include <errno.h>             /* Just make sure we've got a few things... */
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <string.h>
 
 #include <dirent.h>
 
+/* For the new post-DR8 file attributes */
 #include <kernel/fs_attr.h>
-#include <storage/Mime.h>
 #include <support/byteorder.h>
+#include <storage/Mime.h>
 
-
-#define PAD 0
-#define PATH_END '/'
-
-/* Library functions not in (most) header files */
-
-#ifdef _POSIX_VERSION
-#  include <utime.h>
-#else
-   int utime OF((char *, time_t *));
+static uch *scanBeOSexfield  OF((const uch *ef_ptr, unsigned ef_len));
+static int  set_file_attrs( const char *, const unsigned char *, const off_t );
+static void setBeOSexfield   OF((const char *path, uch *extra_field));
+#ifdef BEOS_USE_PRINTEXFIELD
+static void printBeOSexfield OF((int isdir, uch *extra_field));
+#endif
+#ifdef BEOS_ASSIGN_FILETYPE
+static void assign_MIME( const char * );
 #endif
 
-extern char *label;
-local ulg label_time = 0;
-local ulg label_mode = 0;
-local time_t label_utim = 0;
+#ifdef SET_DIR_ATTRIB
+typedef struct uxdirattr {      /* struct for holding unix style directory */
+    struct uxdirattr *next;     /*  info until can be sorted and set at end */
+    char *fn;                   /* filename of directory */
+    union {
+        iztimes t3;             /* mtime, atime, ctime */
+        ztimbuf t2;             /* modtime, actime */
+    } u;
+    unsigned perms;             /* same as min_info.file_attr */
+    int have_uidgid;            /* flag */
+    ush uidgid[2];
+    char fnbuf[1];              /* buffer stub for directory name */
+} uxdirattr;
+#define UxAtt(d)  ((uxdirattr *)d)    /* typecast shortcut */
+#endif /* SET_DIR_ATTRIB */
 
-/* Local functions */
-local char *readd OF((DIR *));
-local int get_attr_dir( const char *, char **, off_t * );
-local int add_UT_ef( struct zlist far * );
-local int add_Ux_ef( struct zlist far * );
-local int add_Be_ef( struct zlist far * );
+#ifdef ACORN_FTYPE_NFS
+/* Acorn bits for NFS filetyping */
+typedef struct {
+  uch ID[2];
+  uch size[2];
+  uch ID_2[4];
+  uch loadaddr[4];
+  uch execaddr[4];
+  uch attr[4];
+} RO_extra_block;
 
+#endif /* ACORN_FTYPE_NFS */
 
-#ifdef NO_DIR                    /* for AT&T 3B1 */
-#include <sys/dir.h>
-#ifndef dirent
-#  define dirent direct
-#endif
-typedef FILE DIR;
-/*
-**  Apparently originally by Rich Salz.
-**  Cleaned up and modified by James W. Birdsall.
-*/
+static int created_dir;        /* used in mapname(), checkdir() */
+static int renamed_fullpath;   /* ditto */
 
-#define opendir(path) fopen(path, "r")
+#ifndef SFX
 
-struct dirent *readdir(dirp)
-DIR *dirp;
+/**********************/
+/* Function do_wild() */   /* for porting:  dir separator; match(ignore_case) */
+/**********************/
+
+char *do_wild(__G__ wildspec)
+    __GDEF
+    ZCONST char *wildspec;  /* only used first time on a given dir */
 {
-  static struct dirent entry;
+    static DIR *wild_dir = (DIR *)NULL;
+    static ZCONST char *wildname;
+    static char *dirname, matchname[FILNAMSIZ];
+    static int notfirstcall=FALSE, have_dirname, dirnamelen;
+    struct dirent *file;
 
-  if (dirp == NULL)
-    return NULL;
-  for (;;)
-    if (fread (&entry, sizeof (struct dirent), 1, dirp) == 0)
-      return NULL;
-    else if (entry.d_ino)
-      return (&entry);
-} /* end of readdir() */
+    /* Even when we're just returning wildspec, we *always* do so in
+     * matchname[]--calling routine is allowed to append four characters
+     * to the returned string, and wildspec may be a pointer to argv[].
+     */
+    if (!notfirstcall) {    /* first call:  must initialize everything */
+        notfirstcall = TRUE;
 
-#define closedir(dirp) fclose(dirp)
-#endif /* NO_DIR */
+        if (!iswild(wildspec)) {
+            strcpy(matchname, wildspec);
+            have_dirname = FALSE;
+            wild_dir = NULL;
+            return matchname;
+        }
 
+        /* break the wildspec into a directory part and a wildcard filename */
+        if ((wildname = strrchr(wildspec, '/')) == (ZCONST char *)NULL) {
+            dirname = ".";
+            dirnamelen = 1;
+            have_dirname = FALSE;
+            wildname = wildspec;
+        } else {
+            ++wildname;     /* point at character after '/' */
+            dirnamelen = wildname - wildspec;
+            if ((dirname = (char *)malloc(dirnamelen+1)) == (char *)NULL) {
+                Info(slide, 0x201, ((char *)slide,
+                  "warning:  cannot allocate wildcard buffers\n"));
+                strcpy(matchname, wildspec);
+                return matchname;   /* but maybe filespec was not a wildcard */
+            }
+            strncpy(dirname, wildspec, dirnamelen);
+            dirname[dirnamelen] = '\0';   /* terminate for strcpy below */
+            have_dirname = TRUE;
+        }
 
-local char *readd(d)
-DIR *d;                 /* directory stream to read from */
-/* Return a pointer to the next name in the directory stream d, or NULL if
-   no more entries or an error occurs. */
-{
-  struct dirent *e;
+        if ((wild_dir = opendir(dirname)) != (DIR *)NULL) {
+            while ((file = readdir(wild_dir)) != (struct dirent *)NULL) {
+                if (file->d_name[0] == '.' && wildname[0] != '.')
+                    continue;  /* Unix:  '*' and '?' do not match leading dot */
+                if (match(file->d_name, wildname, 0)) {  /* 0 == case sens. */
+                    if (have_dirname) {
+                        strcpy(matchname, dirname);
+                        strcpy(matchname+dirnamelen, file->d_name);
+                    } else
+                        strcpy(matchname, file->d_name);
+                    return matchname;
+                }
+            }
+            /* if we get to here directory is exhausted, so close it */
+            closedir(wild_dir);
+            wild_dir = (DIR *)NULL;
+        }
 
-  e = readdir(d);
-  return e == NULL ? (char *) NULL : e->d_name;
-}
-
-int procname(n, caseflag)
-char *n;                /* name to process */
-int caseflag;           /* true to force case-sensitive match */
-/* Process a name or sh expression to operate on (or exclude).  Return
-   an error code in the ZE_ class. */
-{
-  char *a;              /* path and name for recursion */
-  DIR *d;               /* directory stream from opendir() */
-  char *e;              /* pointer to name from readd() */
-  int m;                /* matched flag */
-  char *p;              /* path for recursion */
-  struct stat s;        /* result of stat() */
-  struct zlist far *z;  /* steps through zfiles list */
-
-  if (strcmp(n, "-") == 0)   /* if compressing stdin */
-    return newname(n, 0, caseflag);
-  else if (LSSTAT(n, &s))
-  {
-    /* Not a file or directory--search for shell expression in zip file */
-    p = ex2in(n, 0, (int *)NULL);       /* shouldn't affect matching chars */
-    m = 1;
-    for (z = zfiles; z != NULL; z = z->nxt) {
-      if (MATCH(p, z->iname, caseflag))
-      {
-        z->mark = pcount ? filter(z->zname, caseflag) : 1;
-        if (verbose)
-            fprintf(mesg, "zip diagnostic: %scluding %s\n",
-               z->mark ? "in" : "ex", z->name);
-        m = 0;
-      }
+        /* return the raw wildspec in case that works (e.g., directory not
+         * searchable, but filespec was not wild and file is readable) */
+        strcpy(matchname, wildspec);
+        return matchname;
     }
-    free((zvoid *)p);
-    return m ? ZE_MISS : ZE_OK;
-  }
 
-  /* Live name--use if file, recurse if directory */
-  if ((s.st_mode & S_IFDIR) == 0)
-  {
-    /* add or remove name of file */
-    if ((m = newname(n, 0, caseflag)) != ZE_OK)
-      return m;
-  } else {
-    /* Add trailing / to the directory name */
-    if ((p = malloc(strlen(n)+2)) == NULL)
-      return ZE_MEM;
-    if (strcmp(n, ".") == 0) {
-      *p = '\0';  /* avoid "./" prefix and do not create zip entry */
-    } else {
-      strcpy(p, n);
-      a = p + strlen(p);
-      if (a[-1] != '/')
-        strcpy(a, "/");
-      if (dirnames && (m = newname(p, 1, caseflag)) != ZE_OK) {
-        free((zvoid *)p);
-        return m;
-      }
+    /* last time through, might have failed opendir but returned raw wildspec */
+    if (wild_dir == (DIR *)NULL) {
+        notfirstcall = FALSE; /* nothing left to try--reset for new wildspec */
+        if (have_dirname)
+            free(dirname);
+        return (char *)NULL;
     }
-    /* recurse into directory */
-    if (recurse && (d = opendir(n)) != NULL)
-    {
-      while ((e = readd(d)) != NULL) {
-        if (strcmp(e, ".") && strcmp(e, ".."))
-        {
-          if ((a = malloc(strlen(p) + strlen(e) + 1)) == NULL)
-          {
-            closedir(d);
-            free((zvoid *)p);
-            return ZE_MEM;
-          }
-          strcat(strcpy(a, p), e);
-          if ((m = procname(a, caseflag)) != ZE_OK)   /* recurse on name */
-          {
-            if (m == ZE_MISS)
-              zipwarn("name not matched: ", a);
+
+    /* If we've gotten this far, we've read and matched at least one entry
+     * successfully (in a previous call), so dirname has been copied into
+     * matchname already.
+     */
+    while ((file = readdir(wild_dir)) != (struct dirent *)NULL) {
+        if (file->d_name[0] == '.' && wildname[0] != '.')
+            continue;   /* Unix:  '*' and '?' do not match leading dot */
+        if (match(file->d_name, wildname, 0)) {   /* 0 == don't ignore case */
+            if (have_dirname) {
+                /* strcpy(matchname, dirname); */
+                strcpy(matchname+dirnamelen, file->d_name);
+            } else
+                strcpy(matchname, file->d_name);
+            return matchname;
+        }
+    }
+
+    closedir(wild_dir);     /* have read at least one entry; nothing left */
+    wild_dir = (DIR *)NULL;
+    notfirstcall = FALSE;   /* reset for new wildspec */
+    if (have_dirname)
+        free(dirname);
+    return (char *)NULL;
+
+} /* end function do_wild() */
+
+#endif /* !SFX */
+
+
+
+
+
+/**********************/
+/* Function mapattr() */
+/**********************/
+
+int mapattr(__G)
+    __GDEF
+{
+    ulg tmp = G.crec.external_file_attributes;
+
+    switch (G.pInfo->hostnum) {
+        case AMIGA_:
+            tmp = (unsigned)(tmp>>17 & 7);   /* Amiga RWE bits */
+            G.pInfo->file_attr = (unsigned)(tmp<<6 | tmp<<3 | tmp);
+            break;
+        case THEOS_:
+            tmp &= 0xF1FFFFFFL;
+            if ((tmp & 0xF0000000L) != 0x40000000L)
+                tmp &= 0x01FFFFFFL;     /* not a dir, mask all ftype bits */
             else
-              ziperr(m, a);
-          }
-          free((zvoid *)a);
-        }
-      }
-      closedir(d);
-    }
-    free((zvoid *)p);
-  } /* (s.st_mode & S_IFDIR) == 0) */
-  return ZE_OK;
-}
+                tmp &= 0x41FFFFFFL;     /* leave directory bit as set */
+            /* fall through! */
+        case BEOS_:
+        case UNIX_:
+        case VMS_:
+        case ACORN_:
+        case ATARI_:
+        case QDOS_:
+        case TANDEM_:
+            G.pInfo->file_attr = (unsigned)(tmp >> 16);
+            if (G.pInfo->file_attr != 0 || !G.extra_field) {
+                return 0;
+            } else {
+                /* Some (non-Info-ZIP) implementations of Zip for Unix and
+                   VMS (and probably others ??) leave 0 in the upper 16-bit
+                   part of the external_file_attributes field. Instead, they
+                   store file permission attributes in some extra field.
+                   As a work-around, we search for the presence of one of
+                   these extra fields and fall back to the MSDOS compatible
+                   part of external_file_attributes if one of the known
+                   e.f. types has been detected.
+                   Later, we might implement extraction of the permission
+                   bits from the VMS extra field. But for now, the work-around
+                   should be sufficient to provide "readable" extracted files.
+                   (For ASI Unix e.f., an experimental remap of the e.f.
+                   mode value IS already provided!)
+                 */
+                ush ebID;
+                unsigned ebLen;
+                uch *ef = G.extra_field;
+                unsigned ef_len = G.crec.extra_field_length;
+                int r = FALSE;
 
-char *ex2in(x, isdir, pdosflag)
-char *x;                /* external file name */
-int isdir;              /* input: x is a directory */
-int *pdosflag;          /* output: force MSDOS file attributes? */
-/* Convert the external file name to a zip file name, returning the malloc'ed
-   string or NULL if not enough memory. */
-{
-  char *n;              /* internal file name (malloc'ed) */
-  char *t;              /* shortened name */
-  int dosflag;
+                while (!r && ef_len >= EB_HEADSIZE) {
+                    ebID = makeword(ef);
+                    ebLen = (unsigned)makeword(ef+EB_LEN);
+                    if (ebLen > (ef_len - EB_HEADSIZE))
+                        /* discoverd some e.f. inconsistency! */
+                        break;
+                    switch (ebID) {
+                      case EF_ASIUNIX:
+                        if (ebLen >= (EB_ASI_MODE+2)) {
+                            G.pInfo->file_attr =
+                              (unsigned)makeword(ef+(EB_HEADSIZE+EB_ASI_MODE));
+                            /* force stop of loop: */
+                            ef_len = (ebLen + EB_HEADSIZE);
+                            break;
+                        }
+                        /* else: fall through! */
+                      case EF_PKVMS:
+                        /* "found nondecypherable e.f. with perm. attr" */
+                        r = TRUE;
+                      default:
+                        break;
+                    }
+                    ef_len -= (ebLen + EB_HEADSIZE);
+                    ef += (ebLen + EB_HEADSIZE);
+                }
+                if (!r)
+                    return 0;
+            }
+            /* fall through! */
+        /* all remaining cases:  expand MSDOS read-only bit into write perms */
+        case FS_FAT_:
+            /* PKWARE's PKZip for Unix marks entries as FS_FAT_, but stores the
+             * Unix attributes in the upper 16 bits of the external attributes
+             * field, just like Info-ZIP's Zip for Unix.  We try to use that
+             * value, after a check for consistency with the MSDOS attribute
+             * bits (see below).
+             */
+            G.pInfo->file_attr = (unsigned)(tmp >> 16);
+            /* fall through! */
+        case FS_HPFS_:
+        case FS_NTFS_:
+        case MAC_:
+        case TOPS20_:
+        default:
+            /* Ensure that DOS subdir bit is set when the entry's name ends
+             * in a '/'.  Some third-party Zip programs fail to set the subdir
+             * bit for directory entries.
+             */
+            if ((tmp & 0x10) == 0) {
+                extent fnlen = strlen(G.filename);
+                if (fnlen > 0 && G.filename[fnlen-1] == '/')
+                    tmp |= 0x10;
+            }
+            /* read-only bit --> write perms; subdir bit --> dir exec bit */
+            tmp = !(tmp & 1) << 1  |  (tmp & 0x10) >> 4;
+            if ((G.pInfo->file_attr & 0700) == (unsigned)(0400 | tmp<<6))
+                /* keep previous G.pInfo->file_attr setting, when its "owner"
+                 * part appears to be consistent with DOS attribute flags!
+                 */
+                return 0;
+            G.pInfo->file_attr = (unsigned)(0444 | tmp<<6 | tmp<<3 | tmp);
+            break;
+    } /* end switch (host-OS-created-by) */
 
-  dosflag = dosify;  /* default for non-DOS and non-OS/2 */
+    /* for originating systems with no concept of "group," "other," "system": */
+    umask( (int)(tmp=umask(0)) );    /* apply mask to expanded r/w(/x) perms */
+    G.pInfo->file_attr &= ~tmp;
 
-  /* Find starting point in name before doing malloc */
-  for (t = x; *t == '/'; t++)
-    ;                   /* strip leading '/' chars to get a relative path */
-  while (*t == '.' && t[1] == '/')
-    t += 2;             /* strip redundant leading "./" sections */
-
-  /* Make changes, if any, to the copied name (leave original intact) */
-  if (!pathput)
-    t = last(t, PATH_END);
-
-  /* Malloc space for internal name and copy it */
-  if ((n = malloc(strlen(t) + 1)) == NULL)
-    return NULL;
-  strcpy(n, t);
-
-  if (isdir == 42) return n;    /* avoid warning on unused variable */
-
-  if (dosify)
-    msname(n);
-
-  /* Returned malloc'ed name */
-  if (pdosflag)
-    *pdosflag = dosflag;
-  return n;
-}
-
-
-char *in2ex(n)
-char *n;                /* internal file name */
-/* Convert the zip file name to an external file name, returning the malloc'ed
-   string or NULL if not enough memory. */
-{
-  char *x;              /* external file name */
-
-  if ((x = malloc(strlen(n) + 1 + PAD)) == NULL)
-    return NULL;
-  strcpy(x, n);
-  return x;
-}
-
-/*
- * XXX use ztimbuf in both POSIX and non POSIX cases ?
- */
-void stamp(f, d)
-char *f;                /* name of file to change */
-ulg d;                  /* dos-style time to change it to */
-/* Set last updated and accessed time of file f to the DOS time d. */
-{
-#ifdef _POSIX_VERSION
-  struct utimbuf u;     /* argument for utime()  const ?? */
-#else
-  time_t u[2];          /* argument for utime() */
-#endif
-
-  /* Convert DOS time to time_t format in u */
-#ifdef _POSIX_VERSION
-  u.actime = u.modtime = dos2unixtime(d);
-  utime(f, &u);
-#else
-  u[0] = u[1] = dos2unixtime(d);
-  utime(f, u);
-#endif
-
-}
-
-ulg filetime(f, a, n, t)
-char *f;                /* name of file to get info on */
-ulg *a;                 /* return value: file attributes */
-long *n;                /* return value: file size */
-iztimes *t;             /* return value: access, modific. and creation times */
-/* If file *f does not exist, return 0.  Else, return the file's last
-   modified date and time as an MSDOS date and time.  The date and
-   time is returned in a long with the date most significant to allow
-   unsigned integer comparison of absolute times.  Also, if a is not
-   a NULL pointer, store the file attributes there, with the high two
-   bytes being the Unix attributes, and the low byte being a mapping
-   of that to DOS attributes.  If n is not NULL, store the file size
-   there.  If t is not NULL, the file's access, modification and creation
-   times are stored there as UNIX time_t values.
-   If f is "-", use standard input as the file. If f is a device, return
-   a file size of -1 */
-{
-  struct stat s;        /* results of stat() */
-  /* convert FNAMX to malloc - 11/8/04 EG */
-  char *name;
-  int len = strlen(f);
-
-  if (f == label) {
-    if (a != NULL)
-      *a = label_mode;
-    if (n != NULL)
-      *n = -2L; /* convention for a label name */
-    if (t != NULL)
-      t->atime = t->mtime = t->ctime = label_utim;
-    return label_time;
-  }
-  if ((name = malloc(len + 1)) == NULL) {
-    ZIPERR(ZE_MEM, "filetime");
-  }
-  strcpy(name, f);
-  if (name[len - 1] == '/')
-    name[len - 1] = '\0';
-  /* not all systems allow stat'ing a file with / appended */
-  if (strcmp(f, "-") == 0) {
-    if (fstat(fileno(stdin), &s) != 0) {
-      free(name);
-      error("fstat(stdin)");
-    }
-  } else if (LSSTAT(name, &s) != 0) {
-             /* Accept about any file kind including directories
-              * (stored with trailing / with -r option)
-              */
-    free(name);
     return 0;
-  }
-  free(name);
 
-  if (a != NULL) {
-    *a = ((ulg)s.st_mode << 16) | !(s.st_mode & S_IWRITE);
-    if ((s.st_mode & S_IFMT) == S_IFDIR) {
-      *a |= MSDOS_DIR_ATTR;
-    }
-  }
-  if (n != NULL)
-    *n = (s.st_mode & S_IFMT) == S_IFREG ? s.st_size : -1L;
-  if (t != NULL) {
-    t->atime = s.st_atime;
-    t->mtime = s.st_mtime;
-    t->ctime = s.st_mtime;   /* best guess (s.st_ctime: last status change!) */
-  }
+} /* end function mapattr() */
 
-  return unix2dostime(&s.st_mtime);
-}
 
-/* ----------------------------------------------------------------------
 
-Return a malloc()'d buffer containing all of the attributes and their names
-for the file specified in name.  You have to free() this yourself.  The length
-of the buffer is also returned.
 
-If get_attr_dir() fails, the buffer will be NULL, total_size will be 0,
-and an error will be returned:
 
-    EOK    - no errors occurred
-    EINVAL - attr_buff was pointing at a buffer
-    ENOMEM - insufficient memory for attribute buffer
+/************************/
+/*  Function mapname()  */
+/************************/
 
-Other errors are possible (whatever is returned by the fs_attr.h functions).
-
-PROBLEMS:
-
-- pointers are 32-bits; attributes are limited to off_t in size so it's
-  possible to overflow... in practice, this isn't too likely... your
-  machine will thrash like hell before that happens
-
-*/
-
-#define INITIAL_BUFF_SIZE 65536
-
-int get_attr_dir( const char *name, char **attr_buff, off_t *total_size )
+int mapname(__G__ renamed)
+    __GDEF
+    int renamed;
+/*
+ * returns:
+ *  MPN_OK          - no problem detected
+ *  MPN_INF_TRUNC   - caution (truncated filename)
+ *  MPN_INF_SKIP    - info "skip entry" (dir doesn't exist)
+ *  MPN_ERR_SKIP    - error -> skip entry
+ *  MPN_ERR_TOOLONG - error -> path is too long
+ *  MPN_NOMEM       - error (memory allocation failed) -> skip entry
+ *  [also MPN_VOL_LABEL, MPN_CREATED_DIR]
+ */
 {
-    int               retval = EOK;
-    int               fd;
-    DIR              *fa_dir;
-    struct dirent    *fa_ent;
-    off_t             attrs_size;
-    off_t             this_size;
-    char             *ptr;
-    struct attr_info  fa_info;
-    struct attr_info  big_fa_info;
+    char pathcomp[FILNAMSIZ];      /* path-component buffer */
+    char *pp, *cp=(char *)NULL;    /* character pointers */
+    char *lastsemi=(char *)NULL;   /* pointer to last semi-colon in pathcomp */
+#ifdef ACORN_FTYPE_NFS
+    char *lastcomma=(char *)NULL;  /* pointer to last comma in pathcomp */
+    RO_extra_block *ef_spark;      /* pointer Acorn FTYPE ef block */
+#endif
+    int killed_ddot = FALSE;       /* is set when skipping "../" pathcomp */
+    int error = MPN_OK;
+    register unsigned workch;      /* hold the character being tested */
 
-    retval      = EOK;
-    attrs_size  = 0;    /* gcc still says this is used uninitialized... */
-    *total_size = 0;
 
-    /* ----------------------------------------------------------------- */
-    /* Sanity-check.                                                     */
-    if( *attr_buff != NULL ) {
-        return EINVAL;
-    }
+/*---------------------------------------------------------------------------
+    Initialize various pointers and counters and stuff.
+  ---------------------------------------------------------------------------*/
 
-    /* ----------------------------------------------------------------- */
-    /* Can we open the file/directory?                                   */
-    /*                                                                   */
-    /* linkput is a zip global; it's set to 1 if we're storing symbolic  */
-    /* links as symbolic links (instead of storing the thing the link    */
-    /* points to)... if we're storing the symbolic link as a link, we'll */
-    /* want the link's file attributes, otherwise we want the target's.  */
-    if( linkput ) {
-        fd = open( name, O_RDONLY | O_NOTRAVERSE );
-    } else {
-        fd = open( name, O_RDONLY );
-    }
-    if( fd < 0 ) {
-        return errno;
-    }
+    if (G.pInfo->vollabel)
+        return MPN_VOL_LABEL;   /* can't set disk volume labels in BeOS */
 
-    /* ----------------------------------------------------------------- */
-    /* Allocate an initial buffer; 64k should usually be enough.         */
-    *attr_buff = (char *)malloc( INITIAL_BUFF_SIZE );
-    ptr        = *attr_buff;
-    if( ptr == NULL ) {
-        close( fd );
+    /* can create path as long as not just freshening, or if user told us */
+    G.create_dirs = (!uO.fflag || renamed);
 
-        return ENOMEM;
-    }
+    created_dir = FALSE;        /* not yet */
 
-    /* ----------------------------------------------------------------- */
-    /* Open the attributes directory for this file.                      */
-    fa_dir = fs_fopen_attr_dir( fd );
-    if( fa_dir == NULL ) {
-        close( fd );
+    /* user gave full pathname:  don't prepend rootpath */
+    renamed_fullpath = (renamed && (*G.filename == '/'));
 
-        free( ptr );
-        *attr_buff = NULL;
+    if (checkdir(__G__ (char *)NULL, INIT) == MPN_NOMEM)
+        return MPN_NOMEM;       /* initialize path buffer, unless no memory */
 
-        return retval;
-    }
+    *pathcomp = '\0';           /* initialize translation buffer */
+    pp = pathcomp;              /* point to translation buffer */
+    if (uO.jflag)               /* junking directories */
+        cp = (char *)strrchr(G.filename, '/');
+    if (cp == (char *)NULL)     /* no '/' or not junking dirs */
+        cp = G.filename;        /* point to internal zipfile-member pathname */
+    else
+        ++cp;                   /* point to start of last component of path */
 
-    /* ----------------------------------------------------------------- */
-    /* Read all the attributes; the buffer could grow > 64K if there are */
-    /* many and/or they are large.                                       */
-    fa_ent = fs_read_attr_dir( fa_dir );
-    while( fa_ent != NULL ) {
-        retval = fs_stat_attr( fd, fa_ent->d_name, &fa_info );
-        /* TODO: check retval != EOK */
+/*---------------------------------------------------------------------------
+    Begin main loop through characters in filename.
+  ---------------------------------------------------------------------------*/
 
-        this_size  = strlen( fa_ent->d_name ) + 1;
-        this_size += sizeof( struct attr_info );
-        this_size += fa_info.size;
+    while ((workch = (uch)*cp++) != 0) {
 
-        attrs_size += this_size;
+        switch (workch) {
+            case '/':             /* can assume -j flag not given */
+                *pp = '\0';
+                if (strcmp(pathcomp, ".") == 0) {
+                    /* don't bother appending "./" to the path */
+                    *pathcomp = '\0';
+                } else if (!uO.ddotflag && strcmp(pathcomp, "..") == 0) {
+                    /* "../" dir traversal detected, skip over it */
+                    *pathcomp = '\0';
+                    killed_ddot = TRUE;     /* set "show message" flag */
+                }
+                /* when path component is not empty, append it now */
+                if (*pathcomp != '\0' &&
+                    ((error = checkdir(__G__ pathcomp, APPEND_DIR))
+                     & MPN_MASK) > MPN_INF_TRUNC)
+                    return error;
+                pp = pathcomp;    /* reset conversion buffer for next piece */
+                lastsemi = (char *)NULL; /* leave direct. semi-colons alone */
+                break;
 
-        if( attrs_size > INITIAL_BUFF_SIZE ) {
-            unsigned long offset = ptr - *attr_buff;
+            case ';':             /* VMS version (or DEC-20 attrib?) */
+                lastsemi = pp;
+                *pp++ = ';';      /* keep for now; remove VMS ";##" */
+                break;            /*  later, if requested */
 
-            *attr_buff = (char *)realloc( *attr_buff, attrs_size );
-            if( *attr_buff == NULL ) {
-                retval = fs_close_attr_dir( fa_dir );
-                /* TODO: check retval != EOK */
-                close( fd );
-
-                return ENOMEM;
-            }
-
-            ptr = *attr_buff + offset;
-        }
-
-        /* Now copy the data for this attribute into the buffer. */
-        strcpy( ptr, fa_ent->d_name );
-        ptr += strlen( fa_ent->d_name );
-        *ptr++ = '\0';
-
-        /* We need to put a big-endian version of the fa_info data into */
-        /* the archive.                                                 */
-        big_fa_info.type = B_HOST_TO_BENDIAN_INT32( fa_info.type );
-        big_fa_info.size = B_HOST_TO_BENDIAN_INT64( fa_info.size );
-        memcpy( ptr, &big_fa_info, sizeof( struct attr_info ) );
-        ptr += sizeof( struct attr_info );
-
-        if( fa_info.size > 0 ) {
-            ssize_t read_bytes;
-
-            read_bytes = fs_read_attr( fd, fa_ent->d_name, fa_info.type, 0,
-                                       ptr, fa_info.size );
-            if( read_bytes != fa_info.size ) {
-                /* print a warning about mismatched sizes */
-                char buff[80];
-
-                sprintf( buff, "read %ld, expected %ld",
-                         (ssize_t)read_bytes, (ssize_t)fa_info.size );
-                zipwarn( "attribute size mismatch: ", buff );
-            }
-
-            /* Wave my magic wand... this swaps all the Be types to big- */
-            /* endian automagically.                                     */
-            (void)swap_data( fa_info.type, ptr, fa_info.size,
-                             B_SWAP_HOST_TO_BENDIAN );
-
-            ptr += fa_info.size;
-        }
-
-        fa_ent = fs_read_attr_dir( fa_dir );
-    }
-
-    /* ----------------------------------------------------------------- */
-    /* Close the attribute directory.                                    */
-    retval = fs_close_attr_dir( fa_dir );
-    /* TODO: check retval != EOK */
-
-    /* ----------------------------------------------------------------- */
-    /* If the buffer is too big, shrink it.                              */
-    if( attrs_size < INITIAL_BUFF_SIZE ) {
-        *attr_buff = (char *)realloc( *attr_buff, attrs_size );
-        if( *attr_buff == NULL ) {
-            /* This really shouldn't happen... */
-            close( fd );
-
-            return ENOMEM;
-        }
-    }
-
-    *total_size = attrs_size;
-
-    close( fd );
-
-    return EOK;
-}
-
-/* ---------------------------------------------------------------------- */
-/* Add a 'UT' extra field to the zlist data pointed to by z.              */
-
-#define EB_L_UT_SIZE    (EB_HEADSIZE + EB_UT_LEN(2))
-#define EB_C_UT_SIZE    (EB_HEADSIZE + EB_UT_LEN(1))
-
-local int add_UT_ef( struct zlist far *z )
-{
-    char        *l_ef = NULL;
-    char        *c_ef = NULL;
-    struct stat  s;
-
-#ifdef IZ_CHECK_TZ
-    if (!zp_tz_is_valid)
-        return ZE_OK;           /* skip silently if no valid TZ info */
+#ifdef ACORN_FTYPE_NFS
+            case ',':             /* NFS filetype extension */
+                lastcomma = pp;
+                *pp++ = ',';      /* keep for now; may need to remove */
+                break;            /*  later, if requested */
 #endif
 
-    /* We can't work if there's no entry to work on. */
-    if( z == NULL ) {
-        return ZE_LOGIC;
+            default:
+                /* allow European characters in filenames: */
+                if (isprint(workch) || (128 <= workch && workch <= 254))
+                    *pp++ = (char)workch;
+        } /* end switch */
+
+    } /* end while loop */
+
+    /* Show warning when stripping insecure "parent dir" path components */
+    if (killed_ddot && QCOND2) {
+        Info(slide, 0, ((char *)slide,
+          "warning:  skipped \"../\" path component(s) in %s\n",
+          FnFilter1(G.filename)));
+        if (!(error & ~MPN_MASK))
+            error = (error & MPN_MASK) | PK_WARN;
     }
 
-    /* Check to make sure we've got enough room in the extra fields. */
-    if( z->ext + EB_L_UT_SIZE > USHRT_MAX ||
-        z->cext + EB_C_UT_SIZE > USHRT_MAX ) {
-        return ZE_MEM;
+/*---------------------------------------------------------------------------
+    Report if directory was created (and no file to create:  filename ended
+    in '/'), check name to be sure it exists, and combine path and name be-
+    fore exiting.
+  ---------------------------------------------------------------------------*/
+
+    if (G.filename[strlen(G.filename) - 1] == '/') {
+        checkdir(__G__ G.filename, GETPATH);
+        if (created_dir) {
+            if (QCOND2) {
+                Info(slide, 0, ((char *)slide, "   creating: %s\n",
+                  FnFilter1(G.filename)));
+            }
+
+            if (!uO.J_flag) {   /* Handle the BeOS extra field if present. */
+                void *ptr = scanBeOSexfield( G.extra_field,
+                                             G.lrec.extra_field_length );
+                if (ptr) {
+                    setBeOSexfield( G.filename, ptr );
+                }
+            }
+
+#ifndef NO_CHMOD
+            /* set approx. dir perms (make sure can still read/write in dir) */
+            if (chmod(G.filename, (0xffff & G.pInfo->file_attr) | 0700))
+                perror("chmod (directory attributes) error");
+#endif
+
+            /* set dir time (note trailing '/') */
+            return (error & ~MPN_MASK) | MPN_CREATED_DIR;
+        }
+        /* TODO: should we re-write the BeOS extra field data in case it's */
+        /* changed?  The answer is yes. [Sept 1999 - cjh]                  */
+        if (!uO.J_flag) {   /* Handle the BeOS extra field if present. */
+            void *ptr = scanBeOSexfield( G.extra_field,
+                                         G.lrec.extra_field_length );
+            if (ptr) {
+                setBeOSexfield( G.filename, ptr );
+            }
+        }
+
+        /* dir existed already; don't look for data to extract */
+        return (error & ~MPN_MASK) | MPN_INF_SKIP;
     }
 
-    /* stat() the file (or the symlink) to get the data; if we can't get */
-    /* the data, there's no point in trying to fill out the fields.      */
-    if(LSSTAT( z->name, &s ) ) {
-        return ZE_OPEN;
+    *pp = '\0';                   /* done with pathcomp:  terminate it */
+
+    /* if not saving them, remove VMS version numbers (appended ";###") */
+    if (!uO.V_flag && lastsemi) {
+        pp = lastsemi + 1;
+        while (isdigit((uch)(*pp)))
+            ++pp;
+        if (*pp == '\0')          /* only digits between ';' and end:  nuke */
+            *lastsemi = '\0';
     }
 
-    /* Allocate memory for the local and central extra fields. */
-    if( z->extra && z->ext != 0 ) {
-        l_ef = (char *)realloc( z->extra, z->ext + EB_L_UT_SIZE );
-    } else {
-        l_ef = (char *)malloc( EB_L_UT_SIZE );
-        z->ext = 0;
-    }
-    if( l_ef == NULL ) {
-        return ZE_MEM;
-    }
-    z->extra = l_ef;
-    l_ef += z->ext;
-
-    if( z->cextra && z->cext != 0 ) {
-        c_ef = (char *)realloc( z->cextra, z->cext + EB_C_UT_SIZE );
-    } else {
-        c_ef = (char *)malloc( EB_C_UT_SIZE );
-        z->cext = 0;
-    }
-    if( c_ef == NULL ) {
-        return ZE_MEM;
-    }
-    z->cextra = c_ef;
-    c_ef += z->cext;
-
-    /* Now add the local version of the field. */
-    *l_ef++ = 'U';
-    *l_ef++ = 'T';
-    *l_ef++ = (char)(EB_UT_LEN(2)); /* length of data in local EF */
-    *l_ef++ = (char)0;
-    *l_ef++ = (char)(EB_UT_FL_MTIME | EB_UT_FL_ATIME);
-    *l_ef++ = (char)(s.st_mtime);
-    *l_ef++ = (char)(s.st_mtime >> 8);
-    *l_ef++ = (char)(s.st_mtime >> 16);
-    *l_ef++ = (char)(s.st_mtime >> 24);
-    *l_ef++ = (char)(s.st_atime);
-    *l_ef++ = (char)(s.st_atime >> 8);
-    *l_ef++ = (char)(s.st_atime >> 16);
-    *l_ef++ = (char)(s.st_atime >> 24);
-
-    z->ext += EB_L_UT_SIZE;
-
-    /* Now add the central version. */
-    memcpy(c_ef, l_ef-EB_L_UT_SIZE, EB_C_UT_SIZE);
-    c_ef[EB_LEN] = (char)(EB_UT_LEN(1)); /* length of data in central EF */
-
-    z->cext += EB_C_UT_SIZE;
-
-    return ZE_OK;
-}
-
-/* ---------------------------------------------------------------------- */
-/* Add a 'Ux' extra field to the zlist data pointed to by z.              */
-
-#define EB_L_UX2_SIZE   (EB_HEADSIZE + EB_UX2_MINLEN)
-#define EB_C_UX2_SIZE   (EB_HEADSIZE)
-
-local int add_Ux_ef( struct zlist far *z )
-{
-    char        *l_ef = NULL;
-    char        *c_ef = NULL;
-    struct stat  s;
-
-    /* Check to make sure we've got enough room in the extra fields. */
-    if( z->ext + EB_L_UX2_SIZE > USHRT_MAX ||
-        z->cext + EB_C_UX2_SIZE > USHRT_MAX ) {
-        return ZE_MEM;
-    }
-
-    /* stat() the file (or the symlink) to get the data; if we can't get */
-    /* the data, there's no point in trying to fill out the fields.      */
-    if(LSSTAT( z->name, &s ) ) {
-        return ZE_OPEN;
-    }
-
-    /* Allocate memory for the local and central extra fields. */
-    if( z->extra && z->ext != 0 ) {
-        l_ef = (char *)realloc( z->extra, z->ext + EB_L_UX2_SIZE );
-    } else {
-        l_ef = (char *)malloc( EB_L_UX2_SIZE );
-        z->ext = 0;
-    }
-    if( l_ef == NULL ) {
-        return ZE_MEM;
-    }
-    z->extra = l_ef;
-    l_ef += z->ext;
-
-    if( z->cextra && z->cext != 0 ) {
-        c_ef = (char *)realloc( z->cextra, z->cext + EB_C_UX2_SIZE );
-    } else {
-        c_ef = (char *)malloc( EB_C_UX2_SIZE );
-        z->cext = 0;
-    }
-    if( c_ef == NULL ) {
-        return ZE_MEM;
-    }
-    z->cextra = c_ef;
-    c_ef += z->cext;
-
-    /* Now add the local version of the field. */
-    *l_ef++ = 'U';
-    *l_ef++ = 'x';
-    *l_ef++ = (char)(EB_UX2_MINLEN);
-    *l_ef++ = (char)(EB_UX2_MINLEN >> 8);
-    *l_ef++ = (char)(s.st_uid);
-    *l_ef++ = (char)(s.st_uid >> 8);
-    *l_ef++ = (char)(s.st_gid);
-    *l_ef++ = (char)(s.st_gid >> 8);
-
-    z->ext += EB_L_UX2_SIZE;
-
-    /* Now add the central version of the field. */
-    *c_ef++ = 'U';
-    *c_ef++ = 'x';
-    *c_ef++ = 0;
-    *c_ef++ = 0;
-
-    z->cext += EB_C_UX2_SIZE;
-
-    return ZE_OK;
-}
-
-/* ---------------------------------------------------------------------- */
-/* Add a 'Be' extra field to the zlist data pointed to by z.              */
-
-#define EB_L_BE_SIZE    (EB_HEADSIZE + EB_L_BE_LEN) /* + attr size */
-#define EB_C_BE_SIZE    (EB_HEADSIZE + EB_C_BE_LEN)
-
-/* maximum memcompress overhead is the sum of the compression header length */
-/* (6 = ush compression type, ulg CRC) and the worstcase deflate overhead   */
-/* when uncompressible data are kept in 2 "stored" blocks (5 per block =    */
-/* byte blocktype + 2 * ush blocklength) */
-#define MEMCOMPRESS_OVERHEAD    (EB_MEMCMPR_HSIZ + EB_DEFLAT_EXTRA)
-
-local int add_Be_ef( struct zlist far *z )
-{
-    char *l_ef       = NULL;
-    char *c_ef       = NULL;
-    char *attrbuff   = NULL;
-    off_t attrsize   = 0;
-    char *compbuff   = NULL;
-    ush   compsize   = 0;
-    uch   flags      = 0;
-
-    /* Check to make sure we've got enough room in the extra fields. */
-    if( z->ext + EB_L_BE_SIZE > USHRT_MAX ||
-        z->cext + EB_C_BE_SIZE > USHRT_MAX ) {
-        return ZE_MEM;
-    }
-
-    /* Attempt to load up a buffer full of the file's attributes. */
+#ifdef ACORN_FTYPE_NFS
+    /* translate Acorn filetype information if asked to do so */
+    if (uO.acorn_nfs_ext &&
+        (ef_spark = (RO_extra_block *)
+                    getRISCOSexfield(G.extra_field, G.lrec.extra_field_length))
+        != (RO_extra_block *)NULL)
     {
-        int retval;
-
-        retval = get_attr_dir( z->name, &attrbuff, &attrsize );
-        if( retval != EOK ) {
-            return ZE_OPEN;
+        /* file *must* have a RISC OS extra field */
+        long ft = (long)makelong((ef_spark->loadaddr);
+        /*32-bit*/
+        if (lastcomma) {
+            pp = lastcomma + 1;
+            while (isxdigit((uch)(*pp))) ++pp;
+            if (pp == lastcomma+4 && *pp == '\0') *lastcomma='\0'; /* nuke */
         }
-        if( attrsize == 0 ) {
-            return ZE_OK;
-        }
-        if( attrbuff == NULL ) {
-            return ZE_LOGIC;
-        }
+        if ((ft & 1<<31)==0) ft=0x000FFD00;
+        sprintf(pathcomp+strlen(pathcomp), ",%03x", (int)(ft>>8) & 0xFFF);
+    }
+#endif /* ACORN_FTYPE_NFS */
 
-        /* Check for way too much data. */
-        if( attrsize > (off_t)ULONG_MAX ) {
-            zipwarn( "uncompressed attributes truncated", "" );
-            attrsize = (off_t)(ULONG_MAX - MEMCOMPRESS_OVERHEAD);
-        }
+    if (*pathcomp == '\0') {
+        Info(slide, 1, ((char *)slide, "mapname:  conversion of %s failed\n",
+          FnFilter1(G.filename)));
+        return (error & ~MPN_MASK) | MPN_ERR_SKIP;
     }
 
-    if( verbose ) {
-        printf( "\t[in=%lu]", (unsigned long)attrsize );
-    }
+    checkdir(__G__ pathcomp, APPEND_NAME);  /* returns 1 if truncated: care? */
+    checkdir(__G__ G.filename, GETPATH);
 
-    /* Try compressing the data */
-    compbuff = (char *)malloc( (size_t)attrsize + MEMCOMPRESS_OVERHEAD );
-    if( compbuff == NULL ) {
-        return ZE_MEM;
-    }
-    compsize = memcompress( compbuff,
-                            (size_t)attrsize + MEMCOMPRESS_OVERHEAD,
-                            attrbuff,
-                            (size_t)attrsize );
-    if( verbose ) {
-        printf( " [out=%u]", compsize );
-    }
+    return error;
 
-    /* Attempt to optimise very small attributes. */
-    if( compsize > attrsize ) {
-        free( compbuff );
-        compsize = (ush)attrsize;
-        compbuff = attrbuff;
+} /* end function mapname() */
 
-        flags = EB_BE_FL_NATURAL;
-    }
 
-    /* Check to see if we really have enough room in the EF for the data. */
-    if( ( z->ext + compsize + EB_L_BE_LEN ) > USHRT_MAX ) {
-        compsize = USHRT_MAX - EB_L_BE_LEN - z->ext;
-    }
 
-    /* Allocate memory for the local and central extra fields. */
-    if( z->extra && z->ext != 0 ) {
-        l_ef = (char *)realloc( z->extra, z->ext + EB_L_BE_SIZE + compsize );
-    } else {
-        l_ef = (char *)malloc( EB_L_BE_SIZE + compsize );
-        z->ext = 0;
-    }
-    if( l_ef == NULL ) {
-        return ZE_MEM;
-    }
-    z->extra = l_ef;
-    l_ef += z->ext;
 
-    if( z->cextra && z->cext != 0 ) {
-        c_ef = (char *)realloc( z->cextra, z->cext + EB_C_BE_SIZE );
-    } else {
-        c_ef = (char *)malloc( EB_C_BE_SIZE );
-        z->cext = 0;
-    }
-    if( c_ef == NULL ) {
-        return ZE_MEM;
-    }
-    z->cextra = c_ef;
-    c_ef += z->cext;
+/***********************/
+/* Function checkdir() */
+/***********************/
 
-    /* Now add the local version of the field. */
-    *l_ef++ = 'B';
-    *l_ef++ = 'e';
-    *l_ef++ = (char)(compsize + EB_L_BE_LEN);
-    *l_ef++ = (char)((compsize + EB_L_BE_LEN) >> 8);
-    *l_ef++ = (char)((unsigned long)attrsize);
-    *l_ef++ = (char)((unsigned long)attrsize >> 8);
-    *l_ef++ = (char)((unsigned long)attrsize >> 16);
-    *l_ef++ = (char)((unsigned long)attrsize >> 24);
-    *l_ef++ = flags;
-    memcpy( l_ef, compbuff, (size_t)compsize );
-
-    z->ext += EB_L_BE_SIZE + compsize;
-
-    /* And the central version. */
-    *c_ef++ = 'B';
-    *c_ef++ = 'e';
-    *c_ef++ = (char)(EB_C_BE_LEN);
-    *c_ef++ = (char)(EB_C_BE_LEN >> 8);
-    *c_ef++ = (char)compsize;
-    *c_ef++ = (char)(compsize >> 8);
-    *c_ef++ = (char)(compsize >> 16);
-    *c_ef++ = (char)(compsize >> 24);
-    *c_ef++ = flags;
-
-    z->cext += EB_C_BE_SIZE;
-
-    return ZE_OK;
-}
-
-/* Extra field info:
-   - 'UT' - UNIX time extra field
-   - 'Ux' - UNIX uid/gid extra field
-   - 'Be' - BeOS file attributes extra field
-
-   This is done the same way ../unix/unix.c stores the 'UT'/'Ux' fields
-   (full data in local header, only modification time in central header),
-   with the 'Be' field added to the end and the size of the 'Be' field
-   in the central header.
-
-   See the end of beos/osdep.h for a simple explanation of the 'Be' EF
-   layout.
+int checkdir(__G__ pathcomp, flag)
+    __GDEF
+    char *pathcomp;
+    int flag;
+/*
+ * returns:
+ *  MPN_OK          - no problem detected
+ *  MPN_INF_TRUNC   - (on APPEND_NAME) truncated filename
+ *  MPN_INF_SKIP    - path doesn't exist, not allowed to create
+ *  MPN_ERR_SKIP    - path doesn't exist, tried to create and failed; or path
+ *                    exists and is not a directory, but is supposed to be
+ *  MPN_ERR_TOOLONG - path is too long
+ *  MPN_NOMEM       - can't allocate memory for filename buffers
  */
-int set_extra_field(z, z_utim)
-  struct zlist far *z;
-  iztimes *z_utim;
-  /* store full data in local header but just modification time stamp info
-     in central header */
 {
-    int retval;
+    static int rootlen = 0;   /* length of rootpath */
+    static char *rootpath;    /* user's "extract-to" directory */
+    static char *buildpath;   /* full path (so far) to extracted file */
+    static char *end;         /* pointer to end of buildpath ('\0') */
 
-    /* Tell picky compilers to shut up about unused variables. */
-    z_utim = z_utim;
+#   define FN_MASK   7
+#   define FUNCTION  (flag & FN_MASK)
 
-    /* Check to make sure z is valid. */
-    if( z == NULL ) {
-        return ZE_LOGIC;
+
+/*---------------------------------------------------------------------------
+    APPEND_DIR:  append the path component to the path being built and check
+    for its existence.  If doesn't exist and we are creating directories, do
+    so for this one; else signal success or error as appropriate.
+  ---------------------------------------------------------------------------*/
+
+    if (FUNCTION == APPEND_DIR) {
+        int too_long = FALSE;
+#ifdef SHORT_NAMES
+        char *old_end = end;
+#endif
+
+        Trace((stderr, "appending dir segment [%s]\n", FnFilter1(pathcomp)));
+        while ((*end = *pathcomp++) != '\0')
+            ++end;
+#ifdef SHORT_NAMES   /* path components restricted to 14 chars, typically */
+        if ((end-old_end) > FILENAME_MAX)  /* GRR:  proper constant? */
+            *(end = old_end + FILENAME_MAX) = '\0';
+#endif
+
+        /* GRR:  could do better check, see if overrunning buffer as we go:
+         * check end-buildpath after each append, set warning variable if
+         * within 20 of FILNAMSIZ; then if var set, do careful check when
+         * appending.  Clear variable when begin new path. */
+
+        if ((end-buildpath) > FILNAMSIZ-3)  /* need '/', one-char name, '\0' */
+            too_long = TRUE;                /* check if extracting directory? */
+        if (stat(buildpath, &G.statbuf)) {  /* path doesn't exist */
+            if (!G.create_dirs) { /* told not to create (freshening) */
+                free(buildpath);
+                return MPN_INF_SKIP;    /* path doesn't exist: nothing to do */
+            }
+            if (too_long) {
+                Info(slide, 1, ((char *)slide,
+                  "checkdir error:  path too long: %s\n",
+                  FnFilter1(buildpath)));
+                free(buildpath);
+                /* no room for filenames:  fatal */
+                return MPN_ERR_TOOLONG;
+            }
+            if (mkdir(buildpath, 0777) == -1) {   /* create the directory */
+                Info(slide, 1, ((char *)slide,
+                  "checkdir error:  cannot create %s\n\
+                 unable to process %s.\n",
+                  FnFilter2(buildpath), FnFilter1(G.filename)));
+                free(buildpath);
+                /* path didn't exist, tried to create, failed */
+                return MPN_ERR_SKIP;
+            }
+            created_dir = TRUE;
+        } else if (!S_ISDIR(G.statbuf.st_mode)) {
+            Info(slide, 1, ((char *)slide,
+              "checkdir error:  %s exists but is not directory\n\
+                 unable to process %s.\n",
+              FnFilter2(buildpath), FnFilter1(G.filename)));
+            free(buildpath);
+            /* path existed but wasn't dir */
+            return MPN_ERR_SKIP;
+        }
+        if (too_long) {
+            Info(slide, 1, ((char *)slide,
+              "checkdir error:  path too long: %s\n", FnFilter1(buildpath)));
+            free(buildpath);
+            /* no room for filenames:  fatal */
+            return MPN_ERR_TOOLONG;
+        }
+        *end++ = '/';
+        *end = '\0';
+        Trace((stderr, "buildpath now = [%s]\n", FnFilter1(buildpath)));
+        return MPN_OK;
+
+    } /* end if (FUNCTION == APPEND_DIR) */
+
+/*---------------------------------------------------------------------------
+    GETPATH:  copy full path to the string pointed at by pathcomp, and free
+    buildpath.
+  ---------------------------------------------------------------------------*/
+
+    if (FUNCTION == GETPATH) {
+        strcpy(pathcomp, buildpath);
+        Trace((stderr, "getting and freeing path [%s]\n",
+          FnFilter1(pathcomp)));
+        free(buildpath);
+        buildpath = end = (char *)NULL;
+        return MPN_OK;
     }
 
-    /* This function is much simpler now that I've moved the extra fields */
-    /* out... it simplified the 'Be' code, too.                           */
-    retval = add_UT_ef( z );
-    if( retval != ZE_OK ) {
-        return retval;
+/*---------------------------------------------------------------------------
+    APPEND_NAME:  assume the path component is the filename; append it and
+    return without checking for existence.
+  ---------------------------------------------------------------------------*/
+
+    if (FUNCTION == APPEND_NAME) {
+#ifdef SHORT_NAMES
+        char *old_end = end;
+#endif
+
+        Trace((stderr, "appending filename [%s]\n", FnFilter1(pathcomp)));
+        while ((*end = *pathcomp++) != '\0') {
+            ++end;
+#ifdef SHORT_NAMES  /* truncate name at 14 characters, typically */
+            if ((end-old_end) > FILENAME_MAX)      /* GRR:  proper constant? */
+                *(end = old_end + FILENAME_MAX) = '\0';
+#endif
+            if ((end-buildpath) >= FILNAMSIZ) {
+                *--end = '\0';
+                Info(slide, 0x201, ((char *)slide,
+                  "checkdir warning:  path too long; truncating\n\
+                   %s\n                -> %s\n",
+                  FnFilter1(G.filename), FnFilter2(buildpath)));
+                return MPN_INF_TRUNC;   /* filename truncated */
+            }
+        }
+        Trace((stderr, "buildpath now = [%s]\n", FnFilter1(buildpath)));
+        /* could check for existence here, prompt for new name... */
+        return MPN_OK;
     }
 
-    retval = add_Ux_ef( z );
-    if( retval != ZE_OK ) {
-        return retval;
+/*---------------------------------------------------------------------------
+    INIT:  allocate and initialize buffer space for the file currently being
+    extracted.  If file was renamed with an absolute path, don't prepend the
+    extract-to path.
+  ---------------------------------------------------------------------------*/
+
+/* GRR:  for VMS and TOPS-20, add up to 13 to strlen */
+
+    if (FUNCTION == INIT) {
+        Trace((stderr, "initializing buildpath to "));
+#ifdef ACORN_FTYPE_NFS
+        if ((buildpath = (char *)malloc(strlen(G.filename)+rootlen+
+                                        (uO.acorn_nfs_ext ? 5 : 1)))
+#else
+        if ((buildpath = (char *)malloc(strlen(G.filename)+rootlen+1))
+#endif
+            == (char *)NULL)
+            return MPN_NOMEM;
+        if ((rootlen > 0) && !renamed_fullpath) {
+            strcpy(buildpath, rootpath);
+            end = buildpath + rootlen;
+        } else {
+            *buildpath = '\0';
+            end = buildpath;
+        }
+        Trace((stderr, "[%s]\n", FnFilter1(buildpath)));
+        return MPN_OK;
     }
 
-    retval = add_Be_ef( z );
-    if( retval != ZE_OK ) {
-        return retval;
+/*---------------------------------------------------------------------------
+    ROOT:  if appropriate, store the path in rootpath and create it if
+    necessary; else assume it's a zipfile member and return.  This path
+    segment gets used in extracting all members from every zipfile specified
+    on the command line.
+  ---------------------------------------------------------------------------*/
+
+#if (!defined(SFX) || defined(SFX_EXDIR))
+    if (FUNCTION == ROOT) {
+        Trace((stderr, "initializing root path to [%s]\n",
+          FnFilter1(pathcomp)));
+        if (pathcomp == (char *)NULL) {
+            rootlen = 0;
+            return MPN_OK;
+        }
+        if (rootlen > 0)        /* rootpath was already set, nothing to do */
+            return MPN_OK;
+        if ((rootlen = strlen(pathcomp)) > 0) {
+            char *tmproot;
+
+            if ((tmproot = (char *)malloc(rootlen+2)) == (char *)NULL) {
+                rootlen = 0;
+                return MPN_NOMEM;
+            }
+            strcpy(tmproot, pathcomp);
+            if (tmproot[rootlen-1] == '/') {
+                tmproot[--rootlen] = '\0';
+            }
+            if (rootlen > 0 && (stat(tmproot, &G.statbuf) ||
+                                !S_ISDIR(G.statbuf.st_mode)))
+            {   /* path does not exist */
+                if (!G.create_dirs /* || iswild(tmproot) */ ) {
+                    free(tmproot);
+                    rootlen = 0;
+                    /* skip (or treat as stored file) */
+                    return MPN_INF_SKIP;
+                }
+                /* create the directory (could add loop here scanning tmproot
+                 * to create more than one level, but why really necessary?) */
+                if (mkdir(tmproot, 0777) == -1) {
+                    Info(slide, 1, ((char *)slide,
+                      "checkdir:  cannot create extraction directory: %s\n",
+                      FnFilter1(tmproot)));
+                    free(tmproot);
+                    rootlen = 0;
+                    /* path didn't exist, tried to create, and failed: */
+                    /* file exists, or 2+ subdir levels required */
+                    return MPN_ERR_SKIP;
+                }
+            }
+            tmproot[rootlen++] = '/';
+            tmproot[rootlen] = '\0';
+            if ((rootpath = (char *)realloc(tmproot, rootlen+1)) == NULL) {
+                free(tmproot);
+                rootlen = 0;
+                return MPN_NOMEM;
+            }
+            Trace((stderr, "rootpath now = [%s]\n", FnFilter1(rootpath)));
+        }
+        return MPN_OK;
+    }
+#endif /* !SFX || SFX_EXDIR */
+
+/*---------------------------------------------------------------------------
+    END:  free rootpath, immediately prior to program exit.
+  ---------------------------------------------------------------------------*/
+
+    if (FUNCTION == END) {
+        Trace((stderr, "freeing rootpath\n"));
+        if (rootlen > 0) {
+            free(rootpath);
+            rootlen = 0;
+        }
+        return MPN_OK;
     }
 
-    return ZE_OK;
+    return MPN_INVALID; /* should never reach */
+
+} /* end function checkdir() */
+
+
+
+
+
+static int get_extattribs OF((__GPRO__ iztimes *pzt, ush z_uidgid[2]));
+
+static int get_extattribs(__G__ pzt, z_uidgid)
+    __GDEF
+    iztimes *pzt;
+    ush z_uidgid[2];
+{
+/*---------------------------------------------------------------------------
+    Convert from MSDOS-format local time and date to Unix-format 32-bit GMT
+    time:  adjust base year from 1980 to 1970, do usual conversions from
+    yy/mm/dd hh:mm:ss to elapsed seconds, and account for timezone and day-
+    light savings time differences.  If we have a Unix extra field, however,
+    we're laughing:  both mtime and atime are ours.  On the other hand, we
+    then have to check for restoration of UID/GID.
+  ---------------------------------------------------------------------------*/
+    int have_uidgid_flg;
+    unsigned eb_izux_flg;
+
+    eb_izux_flg = (G.extra_field ? ef_scan_for_izux(G.extra_field,
+                   G.lrec.extra_field_length, 0, G.lrec.last_mod_dos_datetime,
+#ifdef IZ_CHECK_TZ
+                   (G.tz_is_valid ? pzt : NULL),
+#else
+                   pzt,
+#endif
+                   z_uidgid) : 0);
+    if (eb_izux_flg & EB_UT_FL_MTIME) {
+        TTrace((stderr, "\nget_extattribs:  Unix e.f. modif. time = %ld\n",
+          pzt->mtime));
+    } else {
+        pzt->mtime = dos_to_unix_time(G.lrec.last_mod_dos_datetime);
+    }
+    if (eb_izux_flg & EB_UT_FL_ATIME) {
+        TTrace((stderr, "get_extattribs:  Unix e.f. access time = %ld\n",
+          pzt->atime));
+    } else {
+        pzt->atime = pzt->mtime;
+        TTrace((stderr, "\nget_extattribs:  modification/access times = %ld\n",
+          pzt->mtime));
+    }
+
+    /* if -X option was specified and we have UID/GID info, restore it */
+    have_uidgid_flg =
+#ifdef RESTORE_UIDGID
+            (uO.X_flag && (eb_izux_flg & EB_UX2_VALID));
+#else
+            0;
+#endif
+    return have_uidgid_flg;
 }
 
-/* ---------------------------------------------------------------------- */
-/* Set a file's MIME type.                                                */
-void setfiletype( const char *file, const char *type )
-{
-    int fd;
-    attr_info fa;
-    ssize_t wrote_bytes;
 
-    fd = open( file, O_RDWR );
-    if( fd < 0 ) {
-        zipwarn( "can't open zipfile to write file type", "" );
+
+
+/****************************/
+/* Function close_outfile() */
+/****************************/
+
+void close_outfile(__G)    /* GRR: change to return PK-style warning level */
+    __GDEF
+{
+    union {
+        iztimes t3;             /* mtime, atime, ctime */
+        struct utimbuf t2;      /* modtime, actime */
+    } zt;
+    ush z_uidgid[2];
+    int have_uidgid_flg;
+
+    fclose(G.outfile);
+
+/*---------------------------------------------------------------------------
+    If symbolic links are supported, allocate storage for a symlink control
+    structure, put the uncompressed "data" and other required info in it, and
+    add the structure to the "deferred symlinks" chain.  Since we know it's a
+    symbolic link to start with, we shouldn't have to worry about overflowing
+    unsigned ints with unsigned longs.
+  ---------------------------------------------------------------------------*/
+
+#ifdef SYMLINKS
+    if (G.symlnk) {
+        unsigned ucsize = (unsigned)G.lrec.ucsize;
+        unsigned BeOSef_len = 0;
+        extent slnk_entrysize;
+        uch *BeOS_exfld;
+        slinkentry *slnk_entry;
+
+        if (!uO.J_flag) {
+            /* Symlinks can have attributes, too. */
+            BeOS_exfld = scanBeOSexfield(G.extra_field,
+                                         G.lrec.extra_field_length);
+            if (BeOS_exfld) {
+                BeOSef_len = makeword(EB_LEN + BeOS_exfld) + EB_HEADSIZE;
+            }
+        }
+
+       slnk_entrysize = sizeof(slinkentry) + BeOSef_len + ucsize +
+                        strlen(G.filename);
+
+        if ((unsigned)slnk_entrysize < ucsize) {
+            Info(slide, 0x201, ((char *)slide,
+              "warning:  symbolic link (%s) failed: mem alloc overflow\n",
+              FnFilter1(G.filename)));
+            return;
+        }
+
+        if ((slnk_entry = (slinkentry *)malloc(slnk_entrysize)) == NULL) {
+            Info(slide, 0x201, ((char *)slide,
+              "warning:  symbolic link (%s) failed: no mem\n",
+              FnFilter1(G.filename)));
+            return;
+        }
+        slnk_entry->next = NULL;
+        slnk_entry->targetlen = ucsize;
+        slnk_entry->attriblen = BeOSef_len;
+        slnk_entry->target = slnk_entry->buf + BeOSef_len;
+        slnk_entry->fname = slnk_entry->target + ucsize + 1;
+        strcpy(slnk_entry->fname, G.filename);
+        if (BeOSef_len > 0)
+            memcpy(slnk_entry->buf, BeOS_exfld, BeOSef_len);
+
+        /* reopen the "link data" file for reading */
+        G.outfile = fopen(G.filename, FOPR);
+
+        if (!G.outfile ||
+            fread(slnk_entry->target, 1, ucsize, G.outfile) != (int)ucsize)
+        {
+            Info(slide, 0x201, ((char *)slide,
+              "warning:  symbolic link (%s) failed\n",
+              FnFilter1(G.filename)));
+            free(slnk_entry);
+            fclose(G.outfile);
+            return;
+        }
+        fclose(G.outfile);                  /* close "link" file for good... */
+        slnk_entry->target[ucsize] = '\0';
+        if (QCOND2)
+            Info(slide, 0, ((char *)slide, "-> %s ",
+              FnFilter1(slnk_entry->target)));
+        /* add this symlink record to the list of deferred symlinks */
+        if (G.slink_last != NULL)
+            G.slink_last->next = slnk_entry;
+        else
+            G.slink_head = slnk_entry;
+        G.slink_last = slnk_entry;
         return;
     }
+#endif /* SYMLINKS */
 
-    fa.type = B_MIME_STRING_TYPE;
-    fa.size = (off_t)(strlen( type ) + 1);
+    /* handle the BeOS extra field if present */
+    if (!uO.J_flag) {
+        void *ptr = scanBeOSexfield( G.extra_field,
+                                     G.lrec.extra_field_length );
 
-    wrote_bytes = fs_write_attr( fd, BE_FILE_TYPE_NAME, fa.type, 0,
-                                 type, fa.size );
-    if( wrote_bytes != (ssize_t)fa.size ) {
-        zipwarn( "couldn't write complete file type", "" );
+        if (ptr) {
+            setBeOSexfield( G.filename, ptr );
+#ifdef BEOS_ASSIGN_FILETYPE
+        } else {
+            /* Otherwise, ask the system to try assigning a MIME type. */
+            assign_MIME( G.filename );
+#endif
+        }
     }
 
-    close( fd );
-}
+/*---------------------------------------------------------------------------
+    Change the file permissions from default ones to those stored in the
+    zipfile.
+  ---------------------------------------------------------------------------*/
 
-int deletedir(d)
-char *d;                /* directory to delete */
-/* Delete the directory *d if it is empty, do nothing otherwise.
-   Return the result of rmdir(), delete(), or system().
-   For VMS, d must be in format [x.y]z.dir;1  (not [x.y.z]).
- */
-{
-# ifdef NO_RMDIR
-    /* code from Greg Roelofs, who horked it from Mark Edwards (unzip) */
-    int r, len;
-    char *s;              /* malloc'd string for system command */
-
-    len = strlen(d);
-    if ((s = malloc(len + 34)) == NULL)
-      return 127;
-
-    sprintf(s, "IFS=\" \t\n\" /bin/rmdir %s 2>/dev/null", d);
-    r = system(s);
-    free(s);
-    return r;
-# else /* !NO_RMDIR */
-    return rmdir(d);
-# endif /* ?NO_RMDIR */
-}
-
-#endif /* !UTIL */
-
-
-/******************************/
-/*  Function version_local()  */
-/******************************/
-
-void version_local()
-{
-    static ZCONST char CompiledWith[] = "Compiled with %s%s for %s%s%s%s.\n\n";
-
-    printf(CompiledWith,
-
-#ifdef __MWERKS__
-      "Metrowerks CodeWarrior", "",
-#else
-#  ifdef __GNUC__
-      "gcc ", __VERSION__,
-#  endif
+#ifndef NO_CHMOD
+    if (chmod(G.filename, 0xffff & G.pInfo->file_attr))
+        perror("chmod (file attributes) error");
 #endif
 
-      "BeOS",
+    have_uidgid_flg = get_extattribs(__G__ &(zt.t3), z_uidgid);
+
+    /* if -X option was specified and we have UID/GID info, restore it */
+    if (have_uidgid_flg) {
+        TTrace((stderr, "close_outfile:  restoring Unix UID/GID info\n"));
+        if (chown(G.filename, (uid_t)z_uidgid[0], (gid_t)z_uidgid[1]))
+        {
+            if (uO.qflag)
+                Info(slide, 0x201, ((char *)slide,
+                  "warning:  cannot set UID %d and/or GID %d for %s\n",
+                  z_uidgid[0], z_uidgid[1], FnFilter1(G.filename)));
+            else
+                Info(slide, 0x201, ((char *)slide,
+                  " (warning) cannot set UID %d and/or GID %d",
+                  z_uidgid[0], z_uidgid[1]));
+        }
+    }
+
+    /* set the file's access and modification times */
+    if (utime(G.filename, &(zt.t2))) {
+        if (uO.qflag)
+            Info(slide, 0x201, ((char *)slide,
+              "warning:  cannot set times for %s\n", FnFilter1(G.filename)));
+        else
+            Info(slide, 0x201, ((char *)slide,
+              " (warning) cannot set times"));
+    }
+
+} /* end function close_outfile() */
+
+
+
+
+#ifdef SYMLINKS
+int set_symlnk_attribs(__G__ slnk_entry)
+    __GDEF
+    slinkentry *slnk_entry;
+{
+    if (slnk_entry->attriblen > 0)
+        setBeOSexfield(slnk_entry->fname, (uch *)slnk_entry->buf);
+    /* currently, no error propagation... */
+    return PK_OK;
+}
+#endif /* SYMLINKS */
+
+
+
+
+#ifdef SET_DIR_ATTRIB
+/* messages of code for setting directory attributes */
+static ZCONST char Far DirlistUidGidFailed[] =
+  "warning:  cannot set UID %d and/or GID %d for %s\n";
+static ZCONST char Far DirlistUtimeFailed[] =
+  "warning:  cannot set modification, access times for %s\n";
+#  ifndef NO_CHMOD
+  static ZCONST char Far DirlistChmodFailed[] =
+    "warning:  cannot set permissions for %s\n";
+#  endif
+
+
+int defer_dir_attribs(__G__ pd)
+    __GDEF
+    direntry **pd;
+{
+    uxdirattr *d_entry;
+
+    d_entry = (uxdirattr *)malloc(sizeof(uxdirattr) + strlen(G.filename));
+    *pd = (direntry *)d_entry;
+    if (d_entry == (uxdirattr *)NULL) {
+        return PK_MEM;
+    }
+    d_entry->fn = d_entry->fnbuf;
+    strcpy(d_entry->fn, G.filename);
+
+    d_entry->perms = G.pInfo->file_attr;
+
+    d_entry->have_uidgid = get_extattribs(__G__ &(d_entry->u.t3),
+                                          d_entry->uidgid);
+    return PK_OK;
+} /* end function defer_dir_attribs() */
+
+
+int set_direc_attribs(__G__ d)
+    __GDEF
+    direntry *d;
+{
+    int errval = PK_OK;
+
+    if (UxAtt(d)->have_uidgid &&
+        chown(UxAtt(d)->fn, (uid_t)UxAtt(d)->uidgid[0],
+              (gid_t)UxAtt(d)->uidgid[1]))
+    {
+        Info(slide, 0x201, ((char *)slide,
+          LoadFarString(DirlistUidGidFailed),
+          UxAtt(d)->uidgid[0], UxAtt(d)->uidgid[1], FnFilter1(d->fn)));
+        if (!errval)
+            errval = PK_WARN;
+    }
+    if (utime(d->fn, (const struct utimbuf *)&UxAtt(d)->u.t2)) {
+        Info(slide, 0x201, ((char *)slide,
+          LoadFarString(DirlistUtimeFailed), FnFilter1(d->fn)));
+        if (!errval)
+            errval = PK_WARN;
+    }
+#ifndef NO_CHMOD
+    if (chmod(d->fn, 0xffff & UxAtt(d)->perms)) {
+        Info(slide, 0x201, ((char *)slide,
+          LoadFarString(DirlistChmodFailed), FnFilter1(d->fn)));
+        /* perror("chmod (file attributes) error"); */
+        if (!errval)
+            errval = PK_WARN;
+    }
+#endif /* !NO_CHMOD */
+    return errval;
+} /* end function set_direc_attribs() */
+
+#endif /* SET_DIR_ATTRIB */
+
+
+
+
+#ifdef TIMESTAMP
+
+/***************************/
+/*  Function stamp_file()  */
+/***************************/
+
+int stamp_file(fname, modtime)
+    ZCONST char *fname;
+    time_t modtime;
+{
+    struct utimbuf tp;
+
+    tp.modtime = tp.actime = modtime;
+    return (utime(fname, &tp));
+
+} /* end function stamp_file() */
+
+#endif /* TIMESTAMP */
+
+
+
+
+#ifndef SFX
+
+/************************/
+/*  Function version()  */
+/************************/
+
+void version(__G)
+    __GDEF
+{
+    sprintf((char *)slide, LoadFarString(CompiledWith),
+#if defined(__MWERKS__)
+      "Metrowerks CodeWarrior", "",
+#elif defined(__GNUC__)
+      "GNU C ", __VERSION__,
+#endif
+      "BeOS ",
 
 #ifdef __POWERPC__
-      " (PowerPC)",
+      "(PowerPC)",
 #else
-#  ifdef __INTEL__
-      " (x86)",
-#  else
-      " (UNKNOWN!)",
-#  endif
+# ifdef __INTEL__
+      "(x86)",
+# else
+      "(unknown)",   /* someday we may have other architectures... */
+# endif
 #endif
 
 #ifdef __DATE__
@@ -942,4 +1144,284 @@ void version_local()
 #endif
     );
 
-} /* end function version_local() */
+    (*G.message)((zvoid *)&G, slide, (ulg)strlen((char *)slide), 0);
+
+} /* end function version() */
+
+#endif /* !SFX */
+
+
+
+/******************************/
+/* Extra field functions      */
+/******************************/
+
+/*
+** Scan the extra fields in extra_field, and look for a BeOS EF; return a
+** pointer to that EF, or NULL if it's not there.
+*/
+static uch *scanBeOSexfield( const uch *ef_ptr, unsigned ef_len )
+{
+    while( ef_ptr != NULL && ef_len >= EB_HEADSIZE ) {
+        unsigned eb_id  = makeword(EB_ID + ef_ptr);
+        unsigned eb_len = makeword(EB_LEN + ef_ptr);
+
+        if (eb_len > (ef_len - EB_HEADSIZE)) {
+            Trace((stderr,
+              "scanBeOSexfield: block length %u > rest ef_size %u\n", eb_len,
+              ef_len - EB_HEADSIZE));
+            break;
+        }
+
+        if( eb_id == EF_BEOS && eb_len >= EB_BEOS_HLEN ) {
+            return (uch *)ef_ptr;
+        }
+
+        ef_ptr += (eb_len + EB_HEADSIZE);
+        ef_len -= (eb_len + EB_HEADSIZE);
+    }
+
+    return NULL;
+}
+
+/* Used by setBeOSexfield():
+
+Set a file/directory's attributes to the attributes passed in.
+
+If set_file_attrs() fails, an error will be returned:
+
+     EOK - no errors occurred
+
+(other values will be whatever the failed function returned; no docs
+yet, or I'd list a few)
+*/
+static int set_file_attrs( const char *name,
+                           const unsigned char *attr_buff,
+                           const off_t attr_size )
+{
+    int                  retval = EOK;
+    unsigned char       *ptr;
+    const unsigned char *guard;
+    int                  fd;
+
+    ptr   = (unsigned char *)attr_buff;
+    guard = ptr + attr_size;
+
+    fd = open( name, O_RDWR | O_NOTRAVERSE );
+    if( fd < 0 ) {
+        return errno; /* should it be -fd ? */
+    }
+
+    while( ptr < guard ) {
+        ssize_t              wrote_bytes;
+        struct attr_info     fa_info;
+        const char          *attr_name;
+        unsigned char       *attr_data;
+
+        attr_name  = (char *)&(ptr[0]);
+        ptr       += strlen( attr_name ) + 1;
+
+        /* The attr_info data is stored in big-endian format because the */
+        /* PowerPC port was here first.                                  */
+        memcpy( &fa_info, ptr, sizeof( struct attr_info ) );
+        fa_info.type = (uint32)B_BENDIAN_TO_HOST_INT32( fa_info.type );
+        fa_info.size = (off_t)B_BENDIAN_TO_HOST_INT64( fa_info.size );
+        ptr     += sizeof( struct attr_info );
+
+        if( fa_info.size < 0LL ) {
+            Info(slide, 0x201, ((char *)slide,
+                 "warning: skipping attribute with invalid length (%Ld)\n",
+                 fa_info.size));
+            break;
+        }
+
+        attr_data  = ptr;
+        ptr       += fa_info.size;
+
+        if( ptr > guard ) {
+            /* We've got a truncated attribute. */
+            Info(slide, 0x201, ((char *)slide,
+                 "warning: truncated attribute\n"));
+            break;
+        }
+
+        /* Wave the magic wand... this will swap Be-known types properly. */
+        (void)swap_data( fa_info.type, attr_data, fa_info.size,
+                         B_SWAP_BENDIAN_TO_HOST );
+
+        wrote_bytes = fs_write_attr( fd, attr_name, fa_info.type, 0,
+                                     attr_data, fa_info.size );
+        if( wrote_bytes != fa_info.size ) {
+            Info(slide, 0x201, ((char *)slide,
+                 "warning: wrote %ld attribute bytes of %ld\n",
+                 (unsigned long)wrote_bytes,(unsigned long)fa_info.size));
+        }
+    }
+
+    close( fd );
+
+    return retval;
+}
+
+static void setBeOSexfield( const char *path, uch *extra_field )
+{
+    uch *ptr       = extra_field;
+    ush  id        = 0;
+    ush  size      = 0;
+    ulg  full_size = 0;
+    uch  flags     = 0;
+    uch *attrbuff  = NULL;
+    int retval;
+
+    if( extra_field == NULL ) {
+        return;
+    }
+
+    /* Collect the data from the extra field buffer. */
+    id        = makeword( ptr );    ptr += 2;   /* we don't use this... */
+    size      = makeword( ptr );    ptr += 2;
+    full_size = makelong( ptr );    ptr += 4;
+    flags     = *ptr;               ptr++;
+
+    /* Do a little sanity checking. */
+    if( flags & EB_BE_FL_BADBITS ) {
+        /* corrupted or unsupported */
+        Info(slide, 0x201, ((char *)slide,
+             "Unsupported flags set for this BeOS extra field, skipping.\n"));
+        return;
+    }
+    if( size <= EB_BEOS_HLEN ) {
+        /* corrupted, unsupported, or truncated */
+        Info(slide, 0x201, ((char *)slide,
+             "BeOS extra field is %d bytes, should be at least %d.\n", size,
+             EB_BEOS_HLEN));
+        return;
+    }
+    if( full_size < ( size - EB_BEOS_HLEN ) ) {
+        /* possible old archive? will this screw up on valid archives? */
+        Info(slide, 0x201, ((char *)slide,
+             "Skipping attributes: BeOS extra field is %d bytes, "
+             "data size is %ld.\n", size - EB_BEOS_HLEN, full_size));
+        return;
+    }
+
+    /* Find the BeOS file attribute data. */
+    if( flags & EB_BE_FL_UNCMPR ) {
+        /* Uncompressed data */
+        attrbuff = ptr;
+    } else {
+        /* Compressed data */
+        attrbuff = (uch *)malloc( full_size );
+        if( attrbuff == NULL ) {
+            /* No memory to uncompress attributes */
+            Info(slide, 0x201, ((char *)slide,
+                 "Can't allocate memory to uncompress file attributes.\n"));
+            return;
+        }
+
+        retval = memextract( __G__ attrbuff, full_size,
+                             ptr, size - EB_BEOS_HLEN );
+        if( retval != PK_OK ) {
+            /* error uncompressing attributes */
+            Info(slide, 0x201, ((char *)slide,
+                 "Error uncompressing file attributes.\n"));
+
+            /* Some errors here might not be so bad; we should expect */
+            /* some truncated data, for example.  If the data was     */
+            /* corrupt, we should _not_ attempt to restore the attrs  */
+            /* for this file... there's no way to detect what attrs   */
+            /* are good and which are bad.                            */
+            free( attrbuff );
+            return;
+        }
+    }
+
+    /* Now attempt to set the file attributes on the extracted file. */
+    retval = set_file_attrs( path, attrbuff, (off_t)full_size );
+    if( retval != EOK ) {
+        Info(slide, 0x201, ((char *)slide,
+             "Error writing file attributes.\n"));
+    }
+
+    /* Clean up, if necessary */
+    if( attrbuff != ptr ) {
+        free( attrbuff );
+    }
+
+    return;
+}
+
+#ifdef BEOS_USE_PRINTEXFIELD
+static void printBeOSexfield( int isdir, uch *extra_field )
+{
+    uch *ptr       = extra_field;
+    ush  id        = 0;
+    ush  size      = 0;
+    ulg  full_size = 0;
+    uch  flags     = 0;
+
+    /* Tell picky compilers to be quiet. */
+    isdir = isdir;
+
+    if( extra_field == NULL ) {
+        return;
+    }
+
+    /* Collect the data from the buffer. */
+    id        = makeword( ptr );    ptr += 2;
+    size      = makeword( ptr );    ptr += 2;
+    full_size = makelong( ptr );    ptr += 4;
+    flags     = *ptr;               ptr++;
+
+    if( id != EF_BEOS ) {
+        /* not a 'Be' field */
+        printf("\t*** Unknown field type (0x%04x, '%c%c')\n", id,
+               (char)(id >> 8), (char)id);
+    }
+
+    if( flags & EB_BE_FL_BADBITS ) {
+        /* corrupted or unsupported */
+        printf("\t*** Corrupted BeOS extra field:\n");
+        printf("\t*** unknown bits set in the flags\n");
+        printf("\t*** (Possibly created by an old version of zip for BeOS.\n");
+    }
+
+    if( size <= EB_BEOS_HLEN ) {
+        /* corrupted, unsupported, or truncated */
+        printf("\t*** Corrupted BeOS extra field:\n");
+        printf("\t*** size is %d, should be larger than %d\n", size,
+               EB_BEOS_HLEN );
+    }
+
+    if( flags & EB_BE_FL_UNCMPR ) {
+        /* Uncompressed data */
+        printf("\tBeOS extra field data (uncompressed):\n");
+        printf("\t\t%ld data bytes\n", full_size);
+    } else {
+        /* Compressed data */
+        printf("\tBeOS extra field data (compressed):\n");
+        printf("\t\t%d compressed bytes\n", size - EB_BEOS_HLEN);
+        printf("\t\t%ld uncompressed bytes\n", full_size);
+    }
+}
+#endif
+
+#ifdef BEOS_ASSIGN_FILETYPE
+/* Note: This will no longer be necessary in BeOS PR4; update_mime_info()    */
+/* will be updated to build its own absolute pathname if it's not given one. */
+static void assign_MIME( const char *file )
+{
+    char *fullname;
+    char buff[PATH_MAX], cwd_buff[PATH_MAX];
+    int retval;
+
+    if( file[0] == '/' ) {
+        fullname = (char *)file;
+    } else {
+        sprintf( buff, "%s/%s", getcwd( cwd_buff, PATH_MAX ), file );
+        fullname = buff;
+    }
+
+    retval = update_mime_info( fullname, FALSE, TRUE, TRUE );
+}
+#endif

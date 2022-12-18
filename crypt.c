@@ -1,7 +1,7 @@
 /*
-  Copyright (c) 1990-2008 Info-ZIP.  All rights reserved.
+  Copyright (c) 1990-2000 Info-ZIP.  All rights reserved.
 
-  See the accompanying file LICENSE, version 2007-Mar-4 or later
+  See the accompanying file LICENSE, version 2000-Apr-09 or later
   (the contents of which are also included in zip.h) for terms of use.
   If, for some reason, all these files are missing, the Info-ZIP license
   also may be found at:  ftp://ftp.info-zip.org/pub/infozip/license.html
@@ -9,11 +9,10 @@
 /*
   crypt.c (full version) by Info-ZIP.      Last revised:  [see crypt.h]
 
-  The main encryption/decryption source code for Info-Zip software was
-  originally written in Europe.  To the best of our knowledge, it can
-  be freely distributed in both source and object forms from any country,
-  including the USA under License Exception TSU of the U.S. Export
-  Administration Regulations (section 740.13(e)) of 6 June 2002.
+  This encryption/decryption source code for Info-Zip software was
+  originally written in Europe.  The whole source package can be
+  freely distributed, including from the USA.  (Prior to January 2000,
+  re-export from the US was a violation of US law.)
 
   NOTE on copyright history:
   Previous versions of this source package (up to version 2.8) were
@@ -94,9 +93,11 @@
      local int testp OF((__GPRO__ ZCONST uch *h));
      local int testkey OF((__GPRO__ ZCONST uch *h, ZCONST char *key));
 #  endif
-#else /* def UNZIP */           /* moved to globals.h for UnZip */
-   local z_uint4 keys[3];       /* keys defining the pseudo-random sequence */
-#endif /* def UNZIP [else] */
+#endif /* UNZIP */
+
+#ifndef UNZIP             /* moved to globals.h for UnZip */
+   local ulg keys[3];     /* keys defining the pseudo-random sequence */
+#endif /* !UNZIP */
 
 #ifndef Trace
 #  ifdef CRYPT_DEBUG
@@ -106,18 +107,11 @@
 #  endif
 #endif
 
-#include "crc32.h"
+#ifndef CRC_32_TAB
+#  define CRC_32_TAB     crc_32_tab
+#endif
 
-#ifdef IZ_CRC_BE_OPTIMIZ
-   local z_uint4 near crycrctab[256];
-   local z_uint4 near *cry_crctb_p = NULL;
-   local z_uint4 near *crytab_init OF((__GPRO));
-#  define CRY_CRC_TAB  cry_crctb_p
-#  undef CRC32
-#  define CRC32(c, b, crctab) (crctab[((int)(c) ^ (b)) & 0xff] ^ ((c) >> 8))
-#else
-#  define CRY_CRC_TAB  CRC_32_TAB
-#endif /* ?IZ_CRC_BE_OPTIMIZ */
+#define CRC32(c, b) (CRC_32_TAB[((int)(c) ^ (b)) & 0xff] ^ ((c) >> 8))
 
 /***********************************************************************
  * Return the next byte in the pseudo-random sequence
@@ -140,13 +134,12 @@ int update_keys(__G__ c)
     __GDEF
     int c;                      /* byte of plain text */
 {
-    GLOBAL(keys[0]) = CRC32(GLOBAL(keys[0]), c, CRY_CRC_TAB);
-    GLOBAL(keys[1]) = (GLOBAL(keys[1])
-                       + (GLOBAL(keys[0]) & 0xff))
-                      * 134775813L + 1;
+    GLOBAL(keys[0]) = CRC32(GLOBAL(keys[0]), c);
+    GLOBAL(keys[1]) += GLOBAL(keys[0]) & 0xff;
+    GLOBAL(keys[1]) = GLOBAL(keys[1]) * 134775813L + 1;
     {
       register int keyshift = (int)(GLOBAL(keys[1]) >> 24);
-      GLOBAL(keys[2]) = CRC32(GLOBAL(keys[2]), keyshift, CRY_CRC_TAB);
+      GLOBAL(keys[2]) = CRC32(GLOBAL(keys[2]), keyshift);
     }
     return c;
 }
@@ -160,11 +153,6 @@ void init_keys(__G__ passwd)
     __GDEF
     ZCONST char *passwd;        /* password string with which to modify keys */
 {
-#ifdef IZ_CRC_BE_OPTIMIZ
-    if (cry_crctb_p == NULL) {
-        cry_crctb_p = crytab_init(__G);
-    }
-#endif
     GLOBAL(keys[0]) = 305419896L;
     GLOBAL(keys[1]) = 591751049L;
     GLOBAL(keys[2]) = 878082192L;
@@ -175,43 +163,22 @@ void init_keys(__G__ passwd)
 }
 
 
-/***********************************************************************
- * Initialize the local copy of the table of precomputed crc32 values.
- * Whereas the public crc32-table is optimized for crc32 calculations
- * on arrays of bytes, the crypt code needs the crc32 values in an
- * byte-order-independent form as 32-bit unsigned numbers. On systems
- * with Big-Endian byte order using the optimized crc32 code, this
- * requires inverting the byte-order of the values in the
- * crypt-crc32-table.
- */
-#ifdef IZ_CRC_BE_OPTIMIZ
-local z_uint4 near *crytab_init(__G)
-    __GDEF
-{
-    int i;
-
-    for (i = 0; i < 256; i++) {
-        crycrctab[i] = REV_BE(CRC_32_TAB[i]);
-    }
-    return crycrctab;
-}
-#endif
-
-
 #ifdef ZIP
 
 /***********************************************************************
  * Write encryption header to file zfile using the password passwd
  * and the cyclic redundancy check crc.
  */
-void crypthead(passwd, crc)
+void crypthead(passwd, crc, zfile)
     ZCONST char *passwd;         /* password string */
     ulg crc;                     /* crc of file being encrypted */
+    FILE *zfile;                 /* where to write header */
 {
     int n;                       /* index in random header */
     int t;                       /* temporary */
     int c;                       /* random byte */
-    uch header[RAND_HEAD_LEN];   /* random header */
+    int ztemp;                   /* temporary for zencoded value */
+    uch header[RAND_HEAD_LEN-2]; /* random header */
     static unsigned calls = 0;   /* ensure different random header each time */
 
     /* First generate RAND_HEAD_LEN-2 random bytes. We encrypt the
@@ -229,145 +196,100 @@ void crypthead(passwd, crc)
     /* Encrypt random header (last two bytes is high word of crc) */
     init_keys(passwd);
     for (n = 0; n < RAND_HEAD_LEN-2; n++) {
-        header[n] = (uch)zencode(header[n], t);
+        ztemp = zencode(header[n], t);
+        putc(ztemp, zfile);
     }
-    header[RAND_HEAD_LEN-2] = (uch)zencode((int)(crc >> 16) & 0xff, t);
-    header[RAND_HEAD_LEN-1] = (uch)zencode((int)(crc >> 24) & 0xff, t);
-    bfwrite(header, 1, RAND_HEAD_LEN, BFWRITE_DATA);
+    ztemp = zencode((int)(crc >> 16) & 0xff, t);
+    putc(ztemp, zfile);
+    ztemp = zencode((int)(crc >> 24) & 0xff, t);
+    putc(ztemp, zfile);
 }
 
 
 #ifdef UTIL
 
 /***********************************************************************
- * Encrypt the zip entry described by z from file in_file to file y
+ * Encrypt the zip entry described by z from file source to file dest
  * using the password passwd.  Return an error code in the ZE_ class.
  */
-int zipcloak(z, passwd)
+int zipcloak(z, source, dest, passwd)
     struct zlist far *z;    /* zip entry to encrypt */
+    FILE *source, *dest;    /* source and destination files */
     ZCONST char *passwd;    /* password string */
 {
     int c;                  /* input byte */
     int res;                /* result code */
-    zoff_t n;               /* holds offset and counts size */
+    ulg n;                  /* holds offset and counts size */
+    ush flag;               /* previous flags */
     int t;                  /* temporary */
-    struct zlist far *localz; /* local header */
-    uch buf[1024];          /* write buffer */
-    int b;                  /* bytes in buffer */
+    int ztemp;              /* temporary storage for zencode value */
 
     /* Set encrypted bit, clear extended local header bit and write local
        header to output file */
-    if ((n = (zoff_t)zftello(y)) == (zoff_t)-1L) return ZE_TEMP;
-
-    /* assume this archive is one disk and the file is open */
-
-    /* read the local header */
-    res = readlocal(&localz, z);
-
-    /* update disk and offset */
-    z->dsk = 0;
+    if ((n = (ulg)ftell(dest)) == (ulg)-1L) return ZE_TEMP;
     z->off = n;
-
-    /* Set encryption and unset any extended local header */
+    flag = z->flg;
     z->flg |= 1,  z->flg &= ~8;
-    localz->lflg |= 1, localz->lflg &= ~8;
-
-    /* Add size of encryption header */
-    localz->siz += RAND_HEAD_LEN;
-    z->siz = localz->siz;
-
-    /* Put the local header */
-    if ((res = putlocal(localz, PUTLOCAL_WRITE)) != ZE_OK) return res;
+    z->lflg |= 1, z->lflg &= ~8;
+    z->siz += RAND_HEAD_LEN;
+    if ((res = putlocal(z, dest)) != ZE_OK) return res;
 
     /* Initialize keys with password and write random header */
-    crypthead(passwd, localz->crc);
+    crypthead(passwd, z->crc, dest);
+
+    /* Skip local header in input file */
+    if (fseek(source, (long)(4 + LOCHEAD + (ulg)z->nam + (ulg)z->ext),
+              SEEK_CUR)) {
+        return ferror(source) ? ZE_READ : ZE_EOF;
+    }
 
     /* Encrypt data */
-    b = 0;
     for (n = z->siz - RAND_HEAD_LEN; n; n--) {
-      if ((c = getc(in_file)) == EOF) {
-          return ferror(in_file) ? ZE_READ : ZE_EOF;
-      }
-      buf[b] = (uch)zencode(c, t);
-      b++;
-      if (b >= 1024) {
-        /* write the buffer */
-        bfwrite(buf, 1, b, BFWRITE_DATA);
-        b = 0;
-      }
+        if ((c = getc(source)) == EOF) {
+            return ferror(source) ? ZE_READ : ZE_EOF;
+        }
+        ztemp = zencode(c, t);
+        putc(ztemp, dest);
     }
-    if (b) {
-      /* write the buffer */
-      bfwrite(buf, 1, b, BFWRITE_DATA);
-      b = 0;
+    /* Skip extended local header in input file if there is one */
+    if ((flag & 8) != 0 && fseek(source, 16L, SEEK_CUR)) {
+        return ferror(source) ? ZE_READ : ZE_EOF;
     }
-
-    /* Since we seek to the start of each local header can skip
-       reading any extended local header */
-    /*
-    if ((flag & 8) != 0 && zfseeko(in_file, 16L, SEEK_CUR)) {
-        return ferror(in_file) ? ZE_READ : ZE_EOF;
-    }
-    if (fflush(y) == EOF) return ZE_TEMP;
-    */
-
-    /* Update number of bytes written to output file */
-    tempzn += (4 + LOCHEAD) + localz->nam + localz->ext + localz->siz;
-
-    /* Free local header */
-    if (localz->ext) free(localz->extra);
-    if (localz->nam) free(localz->iname);
-    if (localz->nam) free(localz->name);
-#ifdef UNICODE_SUPPORT
-    if (localz->uname) free(localz->uname);
-#endif
-    free(localz);
-
+    if (fflush(dest) == EOF) return ZE_TEMP;
     return ZE_OK;
 }
 
 /***********************************************************************
- * Decrypt the zip entry described by z from file in_file to file y
+ * Decrypt the zip entry described by z from file source to file dest
  * using the password passwd.  Return an error code in the ZE_ class.
  */
-int zipbare(z, passwd)
+int zipbare(z, source, dest, passwd)
     struct zlist far *z;  /* zip entry to encrypt */
+    FILE *source, *dest;  /* source and destination files */
     ZCONST char *passwd;  /* password string */
 {
-#ifdef ZIP10
-    int c0                /* byte preceding the last input byte */
-#endif
-    int c1;               /* last input byte */
-    /* all file offset and size now zoff_t - 8/28/04 EG */
-    zoff_t size;          /* size of input data */
-    struct zlist far *localz; /* local header */
-    uch buf[1024];        /* write buffer */
-    int b;                /* bytes in buffer */
-    zoff_t n;
+    int c0, c1;           /* last two input bytes */
+    ulg offset;           /* used for file offsets */
+    ulg size;             /* size of input data */
     int r;                /* size of encryption header */
     int res;              /* return code */
+    ush flag;             /* previous flags */
 
-    /* Save position */
-    if ((n = (zoff_t)zftello(y)) == (zoff_t)-1L) return ZE_TEMP;
-
-    /* Read local header */
-    res = readlocal(&localz, z);
-
-    /* Update disk and offset */
-    z->dsk = 0;
-    z->off = n;
-
+    /* Save position and skip local header in input file */
+    if ((offset = (ulg)ftell(source)) == (ulg)-1L ||
+        fseek(source, (long)(4 + LOCHEAD + (ulg)z->nam + (ulg)z->ext),
+              SEEK_CUR)) {
+        return ferror(source) ? ZE_READ : ZE_EOF;
+    }
     /* Initialize keys with password */
     init_keys(passwd);
 
     /* Decrypt encryption header, save last two bytes */
     c1 = 0;
     for (r = RAND_HEAD_LEN; r; r--) {
-#ifdef ZIP10
         c0 = c1;
-#endif
-        if ((c1 = getc(in_file)) == EOF) {
-            return ferror(in_file) ? ZE_READ : ZE_EOF;
+        if ((c1 = getc(source)) == EOF) {
+            return ferror(source) ? ZE_READ : ZE_EOF;
         }
         Trace((stdout, " (%02x)", c1));
         zdecode(c1);
@@ -383,59 +305,39 @@ int zipbare(z, passwd)
     if ((ush)(c0 | (c1<<8)) !=
         (z->flg & 8 ? (ush) z->tim & 0xffff : (ush)(z->crc >> 16))) {
 #else
+    c0++; /* avoid warning on unused variable */
     if ((ush)c1 != (z->flg & 8 ? (ush) z->tim >> 8 : (ush)(z->crc >> 24))) {
 #endif
-        if (zfseeko(in_file, n, SEEK_SET)) {
-            return ferror(in_file) ? ZE_READ : ZE_EOF;
+        if (fseek(source, offset, SEEK_SET)) {
+            return ferror(source) ? ZE_READ : ZE_EOF;
         }
-        if ((res = zipcopy(z)) != ZE_OK) {
-            ziperr(res, "was copying an entry");
-        }
+        if ((res = zipcopy(z, source, dest)) != ZE_OK) return res;
         return ZE_MISS;
     }
 
+    /* Clear encrypted bit and local header bit, and write local header to
+       output file */
+    if ((offset = (ulg)ftell(dest)) == (ulg)-1L) return ZE_TEMP;
+    z->off = offset;
+    flag = z->flg;
+    z->flg &= ~9;
+    z->lflg &= ~9;
     z->siz -= RAND_HEAD_LEN;
-    localz->siz = z->siz;
-
-    localz->flg = z->flg &= ~9;
-    z->lflg = localz->lflg &= ~9;
-
-    if ((res = putlocal(localz, PUTLOCAL_WRITE)) != ZE_OK) return res;
+    if ((res = putlocal(z, dest)) != ZE_OK) return res;
 
     /* Decrypt data */
-    b = 0;
     for (size = z->siz; size; size--) {
-        if ((c1 = getc(in_file)) == EOF) {
-            return ferror(in_file) ? ZE_READ : ZE_EOF;
+        if ((c1 = getc(source)) == EOF) {
+            return ferror(source) ? ZE_READ : ZE_EOF;
         }
         zdecode(c1);
-        buf[b] = c1;
-        b++;
-        if (b >= 1024) {
-          /* write the buffer */
-          bfwrite(buf, 1, b, BFWRITE_DATA);
-          b = 0;
-        }
+        putc(c1, dest);
     }
-    if (b) {
-      /* write the buffer */
-      bfwrite(buf, 1, b, BFWRITE_DATA);
-      b = 0;
+    /* Skip extended local header in input file if there is one */
+    if ((flag & 8) != 0 && fseek(source, 16L, SEEK_CUR)) {
+        return ferror(source) ? ZE_READ : ZE_EOF;
     }
-    /* Since we seek to the start of each local header can skip
-         reading any extended local header */
-
-    /* Update number of bytes written to output file */
-    tempzn += (4 + LOCHEAD) + localz->nam + localz->ext + localz->siz;
-
-    /* Free local header */
-    if (localz->ext) free(localz->extra);
-    if (localz->nam) free(localz->iname);
-    if (localz->nam) free(localz->name);
-#ifdef UNICODE_SUPPORT
-    if (localz->uname) free(localz->uname);
-#endif
-    free(localz);
+    if (fflush(dest) == EOF) return ZE_TEMP;
 
     return ZE_OK;
 }
@@ -446,25 +348,18 @@ int zipbare(z, passwd)
 /***********************************************************************
  * If requested, encrypt the data in buf, and in any case call fwrite()
  * with the arguments to zfwrite().  Return what fwrite() returns.
- *
- * now write to global y
- *
- * A bug has been found when encrypting large files that don't
- * compress.  See trees.c for the details and the fix.
  */
-unsigned zfwrite(buf, item_size, nb)
+unsigned zfwrite(buf, item_size, nb, f)
     zvoid *buf;                 /* data buffer */
     extent item_size;           /* size of each item in bytes */
     extent nb;                  /* number of items */
-#if 0
     FILE *f;                    /* file to write to */
-#endif
 {
     int t;                      /* temporary */
 
     if (key != (char *)NULL) {  /* key is the global password pointer */
         ulg size;               /* buffer size */
-        char *p = (char *)buf;  /* steps through buffer */
+        char *p = (char*)buf;   /* steps through buffer */
 
         /* Encrypt data in buffer */
         for (size = item_size*(ulg)nb; size != 0; p++, size--) {
@@ -472,7 +367,7 @@ unsigned zfwrite(buf, item_size, nb)
         }
     }
     /* Write the buffer out */
-    return bfwrite(buf, item_size, nb, BFWRITE_DATA);
+    return fwrite(buf, item_size, nb, f);
 }
 
 #endif /* ?UTIL */
@@ -639,15 +534,13 @@ local int testkey(__G__ h, key)
         Trace((stdout, " %02x", hh[n]));
     }
 
-    /* use fzofft to format zoff_t as strings - 10/19/04 from SMS */
     Trace((stdout,
       "\n  lrec.crc= %08lx  crec.crc= %08lx  pInfo->ExtLocHdr= %s\n",
       GLOBAL(lrec.crc32), GLOBAL(pInfo->crc),
       GLOBAL(pInfo->ExtLocHdr) ? "true":"false"));
-    Trace((stdout, "  incnt = %d  unzip offset into zipfile = %s\n",
+    Trace((stdout, "  incnt = %d  unzip offset into zipfile = %ld\n",
       GLOBAL(incnt),
-      fzofft(GLOBAL(cur_zipfile_bufstart)+(GLOBAL(inptr)-GLOBAL(inbuf)),
-             NULL, NULL)));
+      GLOBAL(cur_zipfile_bufstart)+(GLOBAL(inptr)-GLOBAL(inbuf))));
 
     /* same test as in zipbare(): */
 
@@ -672,7 +565,7 @@ local int testkey(__G__ h, key)
         return -1;  /* bad */
 #endif
     /* password OK:  decrypt current buffer contents before leaving */
-    for (n = (zoff_t)GLOBAL(incnt) > GLOBAL(csize) ?
+    for (n = (long)GLOBAL(incnt) > GLOBAL(csize) ?
              (int)GLOBAL(csize) : GLOBAL(incnt),
          p = GLOBAL(inptr); n--; p++)
         zdecode(*p);

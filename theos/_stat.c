@@ -1,10 +1,10 @@
 /*
-  Copyright (c) 1990-1999 Info-ZIP.  All rights reserved.
+  Copyright (c) 1990-2000 Info-ZIP.  All rights reserved.
 
-  See the accompanying file LICENSE, version 1999-Oct-05 or later
-  (the contents of which are also included in zip.h) for terms of use.
-  If, for some reason, both of these files are missing, the Info-ZIP license
-  also may be found at:  ftp://ftp.cdrom.com/pub/infozip/license.html
+  See the accompanying file LICENSE, version 2000-Apr-09 or later
+  (the contents of which are also included in unzip.h) for terms of use.
+  If, for some reason, all these files are missing, the Info-ZIP license
+  also may be found at:  ftp://ftp.info-zip.org/pub/infozip/license.html
 */
 #pragma library
 #include <stdio.h>
@@ -106,7 +106,7 @@ char _um2tm_(unsigned short mask)
 
 /* root directory stat */
 
-static int rdirstat(const char* fn, struct stat *st)
+static int rdirstat(char* fn, struct stat *st)
 {
     register char* p = strchr(fn, ':');
     char drive;
@@ -132,158 +132,50 @@ static int rdirstat(const char* fn, struct stat *st)
     return -1;
 }
 
-#ifdef LOCATE_BUG
+/* file stat */
 
-/* locate fails when stating a file in root dir from a directory with a
- * relative path. Workaround by setting directory to root dir
- * getting the file directory block, then restoring the current directory.
- */
-
-struct fdb* __locate(const char* fn, char* buf, short* drv)
+int _stat(const char *fn, struct stat *st)
 {
-    struct fdb* fdb;
-    char buf2[FILENAME_MAX];
-    char cwd[FILENAME_MAX];
-    char drive[3];
-    char* p;
-    char* q;
+    char buf[256], buf2[256];
+    char *ifn;
+    register struct fdb *fdb;
+    register char *p;
 
-    /* return if file found */
-    if (fdb = _locate(fn, buf, drv))
-        return fdb;
-
-    /* if file name does not contain a path delimiter it really does not exist.
-     */
-    strcpy(buf2, fn);
-
-    if ((p = strrchr(buf2, '/')) == NULL)
-        return NULL;
-
-    /* get drive name from file path */
-    q = strrchr(buf2, ':');
-
-    /* cat drive name if any to directory path */
-    if (q) {
-        strncpy(drive, q, 2);
-        drive[2] = '\0';
-        strcpy(p, q);
-    } else
-        *p = '\0';
-    /* save current directory */
-    getcwd(cwd, FILENAME_MAX);
-    /* chdir to directory path */
-    chdir(buf2);
-    /* get File Directory Block */
-    p = strrchr(fn, '/');
-    fdb = _locate(p + 1, buf, drv);
-    /* restore current directory */
-    chdir(cwd);
-    return fdb;
-}
-
-#undef _locate
-#define _locate() __locate()
-
-/* same cause, same consequence for fopen and open.
-*/
-
-FILE* _fopen(const char* fn, const char* mode)
-{
-    FILE* fp;
-    char buf[FILENAME_MAX];
-    short drv;
-
-    /* prepend a path to current dir to avoid use of default library */
-    if (*fn != '.' && *fn != '/') {
-        strcpy(buf, "./");
-        strcat(buf, fn);
-        return fopen(buf, mode);
+    if ((ifn = (char *)malloc(strlen(fn)+1)) == NULL) {
+        errno = _errnum = ENOMEM;
+        return -1;
     }
 
-    if (fp = fopen(fn, mode))
-        return fp;
-
-    /* see comment for _locate */
-    if (_locate(fn, buf, &drv)) {
-        fn = strrchr(fn, '/');
-        return fopen(fn, mode);
-    }
-    return NULL;
-}
-
-#undef open
-int open(const char*, int, ...);
-
-int __open(const char* fn, int mode)
-{
-    int fd;
-    char buf[FILENAME_MAX];
-    short drv;
-
-    /* prepend a path to current dir to avoid use of default library */
-    if (*fn != '.' && *fn != '/') {
-        strcpy(buf, "./");
-        strcat(buf, fn);
-        return open(buf, mode);
-    }
-
-    if ((fd = open(fn, mode)) != EOF)
-        return fd;
-
-    /* see comment for _locate */
-    if (_locate(fn, buf, &drv)) {
-        fn = strrchr(fn, '/');
-        if (fn)
-            return open(fn, mode);
-    }
-    return EOF;
-}
-#endif
-
-/* replacement for standard file stat */
-
-int _stat(const char *_fn, struct stat *st)
-{
-    char buf[FILENAME_MAX], buf2[FILENAME_MAX], buf3[FILENAME_MAX];
-    register struct fdb* fdb;
-    register char* p;
-    register char* fn;
-
-    fn = strcpy(buf3, _fn);
-
-    if (p = strrchr(fn, ':'))
+    if (p = strrchr(ifn, ':'))
         *p = 0;
 
     /* on current drive ./:d and .:m point to current dir
-     * on another drive to root directory, workaround to avoid it */
+     * on another drive to root directory */
 
-    if (! strcmp(fn, "/") || ! strcmp(fn, ".") || ! strcmp(fn, "./")) {
+    if (! strcmp(ifn, "/") || ! strcmp(ifn, ".") || ! strcmp(ifn, "./")) {
         if (p == NULL) {
+            free(ifn);
             /* current dir on current drive */
-            fn = getcwd(buf2, FILENAME_MAX);
+            ifn = getcwd(buf2, 256);
             /* getcwd returns NULL on root dir on drive S */
-            if (fn == NULL)
-                fn = strcpy(buf2, "/:S");
+            if (ifn == NULL)
+                strcpy(ifn = buf2, "/:S");
             /* getcwd returns /:d on root dir on any other drive */
-            if (fn[1] == ':')
-                return rdirstat(fn, st);
+            if (ifn[1] == ':')
+                return rdirstat(ifn, st);
         } else {
+            int rstat;
             *p = ':';
-            return rdirstat(fn, st);
-        }
-        if (p)
-            *p = ':';
-    } else {
-        if (p)
-            *p = ':';
-        if (*fn != '.' && *fn != '/') {
-            strcpy(buf2, "./");
-            fn = strcat(buf2, fn);
+            rstat = rdirstat(ifn, st);
+            free(ifn);
+            return rstat;
         }
     }
 
-    if (buf2 != fn)
-        strcpy(buf2, fn);
+    if (p)
+        *p = ':';
+
+    strcpy(buf2, ifn);
     /* remove trailing slash before optional disk name */
     if (p = strrchr(buf2, '/')) {
         if (p[1] == ':') {
@@ -293,36 +185,34 @@ int _stat(const char *_fn, struct stat *st)
         } else if (p[1] == '\0')
             *p = '\0';
     }
-    /* if fn is a file get file directory block structure and device */
+    /* if ifn is a file get file directory block structure and device */
     if (fdb = _locate(buf2, buf, &st->st_dev)) {
         /* is it a file from another user... */
         if (strchr(buf2, '\\')
-        /* a public system file... */
-         || fdb->fileowner == 0
+        /* a public system file */
+          || fdb->fileowner == 0
         /* or a file from the current user account ? */
-         || fdb->fileowner == getuid())
-        /* yes, return stat */
+          || fdb->fileowner == getuid()) {
+            /* yes, return stat */
             return _stat_(st, fdb);
-        else {
+        } else {
             /* no, say file doesn't exist */
             errno = _errnum = ENOENT;
             _errarg = fn;
             return -1;
         }
     }
-    /* else should be a device, get device number from device name */
-    st->st_rdev = st->st_dev = _lub_name(*fn == ':' ? fn+1 : fn);
-    /* if it is really a device return device status */
+    /* else should be a device */
+    st->st_rdev = st->st_dev = _lub_name(*ifn == ':' ? ifn+1 : ifn);
+
+    free(ifn);
     if (st->st_dev != -1 && getlub(st->st_dev) != 255)
         return _dstat_(st);
-    /* neither an existing file or a device name, return EOF */
-    st->st_rdev = st->st_dev = 0;
+
     errno = _errnum = ENOENT;
     _errarg = fn;
     return -1;
 }
-
-/* replacement for fstat */
 
 int _fstat(int fd, struct stat *st)
 {
@@ -335,26 +225,20 @@ int _fstat(int fd, struct stat *st)
 
     if (fd < FOPEN_MAX) {
         fp = &stdin[fd];
-        /* get File Save Area number */
         if (_fcntl(fp,1,0) & 0x80) {
             fsanum = (unsigned short) _fcntl(fp,83,0);
             st->st_dev = (unsigned short) _fcntl(fp,5,0);
 
             if (st->st_dev >= A_DISK && st->st_dev <= Z_DISK) {
-                /* if opened file is a disk file */
-                /* copy far fsa in protected segment to local fsa */
                 for (i = 0, fsanum *= sizeof(fsa), p = (char *) &fsa;
                      i < (sizeof(fsa));
                      i++, fsanum++, p++)
                     *p = _peekfsa((char *) fsanum);
-                /* build stat structure from fsa */
                 status = _stat_(st, (struct fdb*) &fsa);
-                /* get blocksize */
                 if ((st->st_blksize = _fcntl(fp,817,0)) == 0)
                     st->st_blksize = BUFSIZ;
                 return status;
             }
-            /* return device status */
             return _dstat_(st);
         }
     }
@@ -412,50 +296,58 @@ register struct fdb* fdb;
     st->st_ino = 0;
     st->st_org = fdb->filestat;
 
-    /* map fdb file status to stat mode */
     switch (fdb->filestat) {
-    case _FDB_STAT_LIBRARY:         st->st_mode = S_IFLIB;    break;
-    case _FDB_STAT_DIRECTORY:       st->st_mode = S_IFDIR;    break;
-    case _FDB_STAT_STREAM:          st->st_mode = S_IFREG;    break;
-    case _FDB_STAT_RELATIVE:        st->st_mode = S_IFREL;    break;
-    case _FDB_STAT_KEYED:           st->st_mode = S_IFKEY;    break;
-    case _FDB_STAT_INDEXED:         st->st_mode = S_IFIND;    break;
-    case _FDB_STAT_RANDOM:          st->st_mode = S_IFRND;    break;
-    case _FDB_STAT_PROGRAM:         st->st_mode = S_IFR16;    break;
-    case _FDB_STAT_16_BIT_PROGRAM:  st->st_mode = S_IFP16;    break;
-    case _FDB_STAT_32_BIT_PROGRAM:  st->st_mode = S_IFP32;    break;
+    case _FDB_STAT_LIBRARY:         st->st_mode = S_IFLIB;  break;
+    case _FDB_STAT_DIRECTORY:       st->st_mode = S_IFDIR;  break;
+    case _FDB_STAT_STREAM:          st->st_mode = S_IFREG;  break;
+    case _FDB_STAT_RELATIVE:        st->st_mode = S_IFREL;  break;
+    case _FDB_STAT_KEYED:           st->st_mode = S_IFKEY;  break;
+    case _FDB_STAT_INDEXED:         st->st_mode = S_IFIND;  break;
+    case _FDB_STAT_RANDOM:          st->st_mode = S_IFRND;  break;
+    case _FDB_STAT_PROGRAM:         st->st_mode = S_IFR16;  break;
+    case _FDB_STAT_16_BIT_PROGRAM:  st->st_mode = S_IFP16;  break;
+    case _FDB_STAT_32_BIT_PROGRAM:  st->st_mode = S_IFP32;  break;
     }
 
-    /* map theos file protection codes to stat mode */
     st->st_mode |= _tm2um_(st->st_protect = fdb->protect);
     st->st_nlink = 1;
     st->st_uid = st->st_gid = fdb->fileowner;
     st->st_size = fdb->filesize;
     st->st_atime = st->st_mtime = st->st_ctime = getfiledate(fdb);
-    st->st_blksize = 0;
-    /* specific theos information */
     st->st_rlen = fdb->reclen;
     st->st_klen = fdb->keylen;
     st->st_grow = fdb->filegrow;
+    st->st_blksize = 0;
     return 0;
 }
 
 #include <direct.h>
 
-/* standard diropen fails on path endung with a '/', workaround */
-
 struct dirent* _opendir(const char* dirpath)
 {
     int l;
-    char dirp[FILENAME_MAX];
+    char *p;
     struct dirent* dir;
+    char *mypath = NULL;
 
-    if (dirpath && (l = strlen(dirpath))) {
-        if (dirpath[l - 1] == '/') {
-            strcpy(dirp, dirpath);
-            dirp[l - 1] = '\0';
-            return opendir(dirp);
-        }
+    if (dirpath != NULL &&
+        (mypath = (char *)malloc(strlen(dirpath)+1)) == NULL) {
+        errno = _errnum = ENOMEM;
+        return NULL;
     }
-    return opendir(dirpath);
+
+    if (mypath) {
+        l = strlen(mypath);
+        if (l) {
+            p = dirpath + l - 1;
+            if (*p == '/') {
+                *p = '\0';
+                dir = opendir(dirpath);
+                *p = '/';
+                return dir;
+            }
+        }
+
+    }
+    return opendir(mypath);
 }

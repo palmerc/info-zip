@@ -1,114 +1,78 @@
 /*
-  Copyright (c) 1990-2007 Info-ZIP.  All rights reserved.
+  Copyright (c) 1990-2001 Info-ZIP.  All rights reserved.
 
-  See the accompanying file LICENSE, version 2007-Mar-4 or later
-  (the contents of which are also included in zip.h) for terms of use.
+  See the accompanying file LICENSE, version 2000-Apr-09 or later
+  (the contents of which are also included in unzip.h) for terms of use.
   If, for some reason, all these files are missing, the Info-ZIP license
   also may be found at:  ftp://ftp.info-zip.org/pub/infozip/license.html
 */
-
-/*
-   Test procedure:
-
-   Compile and link (in [.VMS] directory):
-
-      define vms SYS$DISK:[]
-      set command /object ZIP_CLI.CLD
-      cc /define = (TEST, VMSCLI) /include = [-] CMDLINE
-      link link CMDLINE.OBJ, ZIP_CLI.OBJ
-
-   Run:
-
-      exec*ute == "$SYS$DISK:[]'"
-      exec cmdline [options ...]
-
-*/
-
-/* 2004-12-13 SMS.
- * Disabled the module name macro to accommodate old GNU C which didn't
- * obey the directive, and thus confused MMS/MMK where the object
- * library dependencies need to have the correct module name.
- */
-#if 0
-# define module_name VMS_ZIP_CMDLINE
-# define module_ident "02-006"
-#endif /* 0 */
-
+#define module_name VMS_UNZIP_CMDLINE
+#define module_ident "02-008"
 /*
 **
-**  Facility:   ZIP
+**  Facility:   UNZIP
 **
-**  Module:     VMS_ZIP_CMDLINE
+**  Module:     VMS_UNZIP_CMDLINE
 **
 **  Author:     Hunter Goatley <goathunter@MadGoat.com>
 **
-**  Date:       July 30, 1993
+**  Date:       25 Apr 97 (orig. Zip version, 30 Jul 93)
 **
-**  Abstract:   Routines to handle a VMS CLI interface for Zip.  The CLI
+**  Abstract:   Routines to handle a VMS CLI interface for UnZip.  The CLI
 **              command line is parsed and a new argc/argv are built and
-**              returned to Zip.
+**              returned to UnZip.
 **
 **  Modified by:
 **
-**      02-007          Steven Schweda          09-FEB-2005
-**              Added /PRESERVE_CASE.
-**      02-006          Onno van der Linden,
-**                      Christian Spieler       07-JUL-1998 23:03
-**              Support GNU CC 2.8 on Alpha AXP (vers-num unchanged).
-**      02-006          Johnny Lee              25-JUN-1998 07:40
-**              Fixed typo (superfluous ';') (vers-num unchanged).
-**      02-006          Christian Spieler       12-SEP-1997 23:17
-**              Fixed bugs in /BEFORE and /SINCE handlers (vers-num unchanged).
-**      02-006          Christian Spieler       12-JUL-1997 02:05
-**              Complete revision of the argv strings construction.
-**              Added handling of "-P pwd", "-R", "-i@file", "-x@file" options.
+**      02-008          Christian Spieler       08-DEC-2001 23:44
+**              Added support for /TRAVERSE_DIRS argument
+**      02-007          Christian Spieler       24-SEP-2001 21:12
+**              Escape verbatim '%' chars in format strings; version unchanged.
+**      02-007          Onno van der Linden     02-Jul-1998 19:07
+**              Modified to support GNU CC 2.8 on Alpha; version unchanged.
+**      02-007          Johnny Lee              25-Jun-1998 07:38
+**              Fixed typo (superfluous ';'); no version num change.
+**      02-007          Hunter Goatley          11-NOV-1997 10:38
+**              Fixed "zip" vs. "unzip" typo; no version num change.
+**      02-007          Christian Spieler       14-SEP-1997 22:43
+**              Cosmetic mods to stay in sync with Zip; no version num change.
+**      02-007          Christian Spieler       12-JUL-1997 02:05
+**              Revised argv vector construction for better handling of quoted
+**              arguments (e.g.: embedded white space); no version num change.
+**      02-007          Christian Spieler       04-MAR-1997 22:25
+**              Made /CASE_INSENSITIVE common to UnZip and ZipInfo mode;
+**              added support for /PASSWORD="decryption_key" argument.
+**      02-006          Christian Spieler       11-MAY-1996 22:40
+**              Added SFX version of VMSCLI_usage().
 **      02-005          Patrick Ellis           09-MAY-1996 22:25
-**              Show UNIX style help screen when UNIX style options are used.
-**      02-004          Onno van der Linden,
-**                      Christian Spieler       13-APR-1996 20:05
-**              Removed /ENCRYPT=VERIFY ("-ee" option).
-**      02-003          Christian Spieler       11-FEB-1996 23:05
-**              Added handling of /EXTRAFIELDS qualifier ("-X" option).
-**      02-002          Christian Spieler       09-JAN-1996 22:25
-**              Added "#include crypt.h", corrected typo.
-**      02-001          Christian Spieler       04-DEC-1995 16:00
-**              Fixed compilation in DEC CC's ANSI mode.
-**      02-000          Christian Spieler       10-OCT-1995 17:54
-**              Modified for Zip v2.1, added several new options.
+**              Show UNIX style usage screen when UNIX style options are used.
+**      02-004          Christian Spieler       06-FEB-1996 02:20
+**              Added /HELP qualifier.
+**      02-003          Christian Spieler       23-DEC-1995 17:20
+**              Adapted to UnZip 5.2.
+**      02-002          Hunter Goatley          16-JUL-1994 10:20
+**              Fixed some typos.
+**      02-001          Cave Newt               14-JUL-1994 15:18
+**              Removed obsolete /EXTRACT option; fixed /*TEXT options;
+**              wrote VMSCLI usage() function
+**      02-000          Hunter Goatley          12-JUL-1994 00:00
+**              Original UnZip version (v5.11).
 **      01-000          Hunter Goatley          30-JUL-1993 07:54
 **              Original version (for Zip v1.9p1).
 **
 */
 
 
-/* 2004-12-13 SMS.
- * Disabled the module name macro to accommodate old GNU C which didn't
- * obey the directive, and thus confused MMS/MMK where the object
- * library dependencies need to have the correct module name.
- */
-#if 0
-# if defined(__DECC) || defined(__GNUC__)
-#  pragma module module_name module_ident
-# else
-#  module module_name module_ident
-# endif
-#endif /* 0 */
+#if defined(__DECC) || defined(__GNUC__)
+#pragma module module_name module_ident
+#else
+#module module_name module_ident
+#endif
 
-/* Accomodation for /NAMES = AS_IS with old header files. */
-
-#define lib$establish LIB$ESTABLISH
-#define lib$get_foreign LIB$GET_FOREIGN
-#define lib$get_input LIB$GET_INPUT
-#define lib$sig_to_ret LIB$SIG_TO_RET
-#define ots$cvt_tu_l OTS$CVT_TU_L
-#define str$concat STR$CONCAT
-#define str$find_first_substring STR$FIND_FIRST_SUBSTRING
-#define str$free1_dx STR$FREE1_DX
-
-#include "zip.h"
+#define UNZIP_INTERNAL
+#include "unzip.h"
 #ifndef TEST
-#include "crypt.h"      /* for VMSCLI_help() */
-#include "revision.h"   /* for VMSCLI_help() */
+#  include "unzvers.h"  /* for VMSCLI_usage() */
 #endif /* !TEST */
 
 #include <ssdef.h>
@@ -116,7 +80,6 @@
 #include <climsgdef.h>
 #include <clidef.h>
 #include <lib$routines.h>
-#include <ots$routines.h>
 #include <str$routines.h>
 
 #ifndef CLI$_COMMA
@@ -154,184 +117,94 @@ globalvalue CLI$_COMMA;
 /*
 **  Define descriptors for all of the CLI parameters and qualifiers.
 */
-$DESCRIPTOR(cli_delete,         "DELETE");              /* -d */
+#if 0
+$DESCRIPTOR(cli_extract,        "EXTRACT");             /* obsolete */
+#endif
+$DESCRIPTOR(cli_text,           "TEXT");                /* -a[a] */
+$DESCRIPTOR(cli_text_auto,      "TEXT.AUTO");           /* -a */
+$DESCRIPTOR(cli_text_all,       "TEXT.ALL");            /* -aa */
+$DESCRIPTOR(cli_text_none,      "TEXT.NONE");           /* ---a */
+$DESCRIPTOR(cli_binary,         "BINARY");              /* -b[b] */
+$DESCRIPTOR(cli_binary_auto,    "BINARY.AUTO");         /* -b */
+$DESCRIPTOR(cli_binary_all,     "BINARY.ALL");          /* -bb */
+$DESCRIPTOR(cli_binary_none,    "BINARY.NONE");         /* ---b */
+$DESCRIPTOR(cli_case_insensitive,"CASE_INSENSITIVE");   /* -C */
+$DESCRIPTOR(cli_screen,         "SCREEN");              /* -c */
+$DESCRIPTOR(cli_directory,      "DIRECTORY");           /* -d */
 $DESCRIPTOR(cli_freshen,        "FRESHEN");             /* -f */
-$DESCRIPTOR(cli_move,           "MOVE");                /* -m */
-$DESCRIPTOR(cli_update,         "UPDATE");              /* -u */
-$DESCRIPTOR(cli_exclude,        "EXCLUDE");             /* -x */
-$DESCRIPTOR(cli_include,        "INCLUDE");             /* -i */
-$DESCRIPTOR(cli_exlist,         "EXLIST");              /* -x@ */
-$DESCRIPTOR(cli_inlist,         "INLIST");              /* -i@ */
-$DESCRIPTOR(cli_adjust,         "ADJUST_OFFSETS");      /* -A */
-$DESCRIPTOR(cli_append,         "APPEND");              /* -g */
-$DESCRIPTOR(cli_batch,          "BATCH");               /* -@ */
-$DESCRIPTOR(cli_before,         "BEFORE");              /* -tt */
-$DESCRIPTOR(cli_comments,       "COMMENTS");            /* -c,-z */
-$DESCRIPTOR(cli_comment_archive,"COMMENTS.ARCHIVE");    /* -z */
-$DESCRIPTOR(cli_comment_zipfile,"COMMENTS.ZIP_FILE");   /* -z */
-$DESCRIPTOR(cli_comment_files,  "COMMENTS.FILES");      /* -c */
-$DESCRIPTOR(cli_compression,    "COMPRESSION");         /* -Z */
-$DESCRIPTOR(cli_compression_b,  "COMPRESSION.BZIP2");   /* -Zb */
-$DESCRIPTOR(cli_compression_d,  "COMPRESSION.DEFLATE"); /* -Zd */
-$DESCRIPTOR(cli_compression_s,  "COMPRESSION.STORE");   /* -Zs */
-$DESCRIPTOR(cli_copy_entries,   "COPY_ENTRIES");        /* -U */
-$DESCRIPTOR(cli_descriptors,    "DESCRIPTORS");         /* -fd */
-$DESCRIPTOR(cli_difference,     "DIFFERENCE");          /* -DF */
-$DESCRIPTOR(cli_dirnames,       "DIRNAMES");            /* -D */
-$DESCRIPTOR(cli_display,        "DISPLAY");             /* -d? */
-$DESCRIPTOR(cli_display_bytes,  "DISPLAY.BYTES");       /* -db */
-$DESCRIPTOR(cli_display_counts, "DISPLAY.COUNTS");      /* -dc */
-$DESCRIPTOR(cli_display_dots,   "DISPLAY.DOTS");        /* -dd,-ds */
-$DESCRIPTOR(cli_display_globaldots, "DISPLAY.GLOBALDOTS"); /* -dg */
-$DESCRIPTOR(cli_display_usize,  "DISPLAY.USIZE");       /* -du */
-$DESCRIPTOR(cli_display_volume, "DISPLAY.VOLUME");      /* -dv */
-$DESCRIPTOR(cli_dot_version,    "DOT_VERSION");         /* -ww */
-$DESCRIPTOR(cli_encrypt,        "ENCRYPT");             /* -e,-P */
-$DESCRIPTOR(cli_extra_fields,   "EXTRA_FIELDS");        /* -X [/NO] */
-$DESCRIPTOR(cli_extra_fields_normal, "EXTRA_FIELDS.NORMAL"); /* no -X */
-$DESCRIPTOR(cli_extra_fields_keep, "EXTRA_FIELDS.KEEP_EXISTING"); /* -X- */
-$DESCRIPTOR(cli_filesync,       "FILESYNC");            /* -FS */
-$DESCRIPTOR(cli_fix_archive,    "FIX_ARCHIVE");         /* -F[F] */
-$DESCRIPTOR(cli_fix_normal,     "FIX_ARCHIVE.NORMAL");  /* -F */
-$DESCRIPTOR(cli_fix_full,       "FIX_ARCHIVE.FULL");    /* -FF */
-$DESCRIPTOR(cli_full_path,      "FULL_PATH");           /* -p */
-$DESCRIPTOR(cli_grow,           "GROW");                /* -g */
 $DESCRIPTOR(cli_help,           "HELP");                /* -h */
-$DESCRIPTOR(cli_help_normal,    "HELP.NORMAL");         /* -h */
-$DESCRIPTOR(cli_help_extended,  "HELP.EXTENDED");       /* -h2 */
 $DESCRIPTOR(cli_junk,           "JUNK");                /* -j */
-$DESCRIPTOR(cli_keep_version,   "KEEP_VERSION");        /* -w */
-$DESCRIPTOR(cli_latest,         "LATEST");              /* -o */
-$DESCRIPTOR(cli_level,          "LEVEL");               /* -[0-9] */
-$DESCRIPTOR(cli_license,        "LICENSE");             /* -L */
-$DESCRIPTOR(cli_log_file,       "LOG_FILE");            /* -la,-lf,-li */
-$DESCRIPTOR(cli_log_file_append, "LOG_FILE.APPEND");    /* -la */
-$DESCRIPTOR(cli_log_file_file,  "LOG_FILE.FILE");       /* -lf */
-$DESCRIPTOR(cli_log_file_info,  "LOG_FILE.INFORMATIONAL"); /* -li */
-$DESCRIPTOR(cli_must_match,     "MUST_MATCH");          /* -MM */
-$DESCRIPTOR(cli_output,         "OUTPUT");              /* -O */
-$DESCRIPTOR(cli_patt_case,      "PATTERN_CASE");        /* -ic[-] */
-$DESCRIPTOR(cli_patt_case_blind, "PATTERN_CASE.BLIND"); /* -ic */
-$DESCRIPTOR(cli_patt_case_sensitive, "PATTERN_CASE.SENSITIVE"); /* -ic- */
-$DESCRIPTOR(cli_pkzip,          "PKZIP");               /* -k */
-$DESCRIPTOR(cli_pres_case,      "PRESERVE_CASE");       /* -C */
-$DESCRIPTOR(cli_pres_case_no2,  "PRESERVE_CASE.NOODS2");/* -C2- */
-$DESCRIPTOR(cli_pres_case_no5,  "PRESERVE_CASE.NOODS5");/* -C5- */
-$DESCRIPTOR(cli_pres_case_ods2, "PRESERVE_CASE.ODS2");  /* -C2 */
-$DESCRIPTOR(cli_pres_case_ods5, "PRESERVE_CASE.ODS5");  /* -C5 */
+$DESCRIPTOR(cli_lowercase,      "LOWERCASE");           /* -L */
+$DESCRIPTOR(cli_list,           "LIST");                /* -l */
+$DESCRIPTOR(cli_brief,          "BRIEF");               /* -l */
+$DESCRIPTOR(cli_full,           "FULL");                /* -v */
+$DESCRIPTOR(cli_overwrite,      "OVERWRITE");           /* -o, -n */
 $DESCRIPTOR(cli_quiet,          "QUIET");               /* -q */
-$DESCRIPTOR(cli_recurse,        "RECURSE");             /* -r,-R */
-$DESCRIPTOR(cli_recurse_path,   "RECURSE.PATH");        /* -r */
-$DESCRIPTOR(cli_recurse_fnames, "RECURSE.FILENAMES");   /* -R */
-$DESCRIPTOR(cli_show,           "SHOW");                /* -s? */
-$DESCRIPTOR(cli_show_command,   "SHOW.COMMAND");        /* -sc */
-$DESCRIPTOR(cli_show_debug,     "SHOW.DEBUG");          /* -sd */
-$DESCRIPTOR(cli_show_files,     "SHOW.FILES");          /* -sf */
-$DESCRIPTOR(cli_show_options,   "SHOW.OPTIONS");        /* -so */
-$DESCRIPTOR(cli_since,          "SINCE");               /* -t */
-$DESCRIPTOR(cli_split,          "SPLIT");               /* -s,-sb,-sp,-sv */
-$DESCRIPTOR(cli_split_bell,     "SPLIT.BELL");          /* -sb */
-$DESCRIPTOR(cli_split_pause,    "SPLIT.PAUSE");         /* -sp */
-$DESCRIPTOR(cli_split_size,     "SPLIT.SIZE");          /* -s */
-$DESCRIPTOR(cli_split_verbose,  "SPLIT.VERBOSE");       /* -sv */
-$DESCRIPTOR(cli_store_types,    "STORE_TYPES");         /* -n */
-$DESCRIPTOR(cli_sverbose,       "SVERBOSE");            /* -sv */
-$DESCRIPTOR(cli_symlinks,       "SYMLINKS");            /* -y */
-$DESCRIPTOR(cli_temp_path,      "TEMP_PATH");           /* -b */
-$DESCRIPTOR(cli_test,           "TEST");                /* -T */
-$DESCRIPTOR(cli_test_unzip,     "TEST.UNZIP");          /* -TT */
-$DESCRIPTOR(cli_translate_eol,  "TRANSLATE_EOL");       /* -l[l] */
-$DESCRIPTOR(cli_transl_eol_lf,  "TRANSLATE_EOL.LF");    /* -l */
-$DESCRIPTOR(cli_transl_eol_crlf,"TRANSLATE_EOL.CRLF");  /* -ll */
-$DESCRIPTOR(cli_unsfx,          "UNSFX");               /* -J */
-$DESCRIPTOR(cli_verbose,        "VERBOSE");             /* -v (?) */
-$DESCRIPTOR(cli_verbose_normal, "VERBOSE.NORMAL");      /* -v */
-$DESCRIPTOR(cli_verbose_more,   "VERBOSE.MORE");        /* -vv */
-$DESCRIPTOR(cli_verbose_debug,  "VERBOSE.DEBUG");       /* -vvv */
-$DESCRIPTOR(cli_verbose_command,"VERBOSE.COMMAND");     /* (none) */
-$DESCRIPTOR(cli_vms,            "VMS");                 /* -V */
-$DESCRIPTOR(cli_vms_all,        "VMS.ALL");             /* -VV */
-$DESCRIPTOR(cli_wildcard,       "WILDCARD");            /* -nw */
-$DESCRIPTOR(cli_wildcard_nospan,"WILDCARD.NOSPAN");     /* -W */
+$DESCRIPTOR(cli_super_quiet,    "QUIET.SUPER");         /* -qq */
+$DESCRIPTOR(cli_test,           "TEST");                /* -t */
+$DESCRIPTOR(cli_pipe,           "PIPE");                /* -p */
+$DESCRIPTOR(cli_password,       "PASSWORD");            /* -P */
+$DESCRIPTOR(cli_uppercase,      "UPPERCASE");           /* -U */
+$DESCRIPTOR(cli_update,         "UPDATE");              /* -u */
+$DESCRIPTOR(cli_version,        "VERSION");             /* -V */
+$DESCRIPTOR(cli_restore,        "RESTORE");             /* -X */
+$DESCRIPTOR(cli_comment,        "COMMENT");             /* -z */
+$DESCRIPTOR(cli_exclude,        "EXCLUDE");             /* -x */
+$DESCRIPTOR(cli_traverse,       "TRAVERSE_DIRS");       /* -: */
 
-$DESCRIPTOR(cli_yyz,            "YYZ_ZIP");
+$DESCRIPTOR(cli_information,    "ZIPINFO");             /* -Z */
+$DESCRIPTOR(cli_short,          "SHORT");               /* -Zs */
+$DESCRIPTOR(cli_medium,         "MEDIUM");              /* -Zm */
+$DESCRIPTOR(cli_long,           "LONG");                /* -Zl */
+$DESCRIPTOR(cli_verbose,        "VERBOSE");             /* -Zv */
+$DESCRIPTOR(cli_header,         "HEADER");              /* -Zh */
+$DESCRIPTOR(cli_totals,         "TOTALS");              /* -Zt */
+$DESCRIPTOR(cli_times,          "TIMES");               /* -ZT */
+$DESCRIPTOR(cli_one_line,       "ONE_LINE");            /* -Z2 */
 
-$DESCRIPTOR(cli_zip64,          "ZIP64");               /* -fz */
+$DESCRIPTOR(cli_page,           "PAGE");                /* -M , -ZM */
+
+$DESCRIPTOR(cli_yyz,            "YYZ_UNZIP");
+
 $DESCRIPTOR(cli_zipfile,        "ZIPFILE");
 $DESCRIPTOR(cli_infile,         "INFILE");
-$DESCRIPTOR(zip_command,        "zip ");
+$DESCRIPTOR(unzip_command,      "unzip ");
 
-static int show_VMSCLI_help;
+static int show_VMSCLI_usage;
 
-#if !defined(zip_clitable)
-#  define zip_clitable ZIP_CLITABLE
-#endif
 #if defined(__DECC) || defined(__GNUC__)
-extern void *zip_clitable;
+extern void *vms_unzip_cld;
 #else
-globalref void *zip_clitable;
+globalref void *vms_unzip_cld;
 #endif
 
 /* extern unsigned long LIB$GET_INPUT(void), LIB$SIG_TO_RET(void); */
 
-#ifndef __STARLET_LOADED
-#ifndef sys$bintim
-#  define sys$bintim SYS$BINTIM
-#endif
-#ifndef sys$numtim
-#  define sys$numtim SYS$NUMTIM
-#endif
-extern int sys$bintim ();
-extern int sys$numtim ();
-#endif /* !__STARLET_LOADED */
-#ifndef cli$dcl_parse
-#  define cli$dcl_parse CLI$DCL_PARSE
-#endif
-#ifndef cli$present
-#  define cli$present CLI$PRESENT
-#endif
-#ifndef cli$get_value
-#  define cli$get_value CLI$GET_VALUE
-#endif
 extern unsigned long cli$dcl_parse ();
 extern unsigned long cli$present ();
 extern unsigned long cli$get_value ();
 
-unsigned long vms_zip_cmdline (int *, char ***);
+unsigned long vms_unzip_cmdline (int *, char ***);
 static unsigned long get_list (struct dsc$descriptor_s *,
                                struct dsc$descriptor_d *, int,
                                char **, unsigned long *, unsigned long *);
-static unsigned long get_time (struct dsc$descriptor_s *qual, char *timearg);
 static unsigned long check_cli (struct dsc$descriptor_s *);
-static int verbose_command = 0;
 
 
 #ifdef TEST
-
-char errbuf[ FNMAX+ 81];        /* Error message buffer. */
-
-void ziperr( int c, char *h)    /* Error message display function. */
-{
-/* int c: error code from the ZE_ class */
-/* char *h: message about how it happened */
-
-printf( "%d: %s\n", c, h);
-}
-
 int
-main(int argc, char **argv)     /* Main program. */
+main(int argc, char **argv)
 {
-    return (vms_zip_cmdline(&argc, &argv));
+    return (vms_unzip_cmdline(&argc, &argv));
 }
-
-#endif /* def TEST */
+#endif /* TEST */
 
 
 unsigned long
-vms_zip_cmdline (int *argc_p, char ***argv_p)
+vms_unzip_cmdline (int *argc_p, char ***argv_p)
 {
 /*
-**  Routine:    vms_zip_cmdline
+**  Routine:    vms_unzip_cmdline
 **
 **  Function:
 **
@@ -348,7 +221,7 @@ vms_zip_cmdline (int *argc_p, char ***argv_p)
 **
 **  Calling sequence:
 **
-**      status = vms_zip_cmdline (&argc, &argv);
+**      status = vms_unzip_cmdline (&argc, &argv);
 **
 **  Returns:
 **
@@ -358,28 +231,32 @@ vms_zip_cmdline (int *argc_p, char ***argv_p)
 **
 */
     register unsigned long status;
-    char options[ 64];
+    char options[256];
     char *the_cmd_line;                 /* buffer for argv strings */
     unsigned long cmdl_size;            /* allocated size of buffer */
     unsigned long cmdl_len;             /* used size of buffer */
     char *ptr;
-    int  x, len;
+    int  x, len, zipinfo, exclude_list;
 
     int new_argc;
     char **new_argv;
 
     struct dsc$descriptor_d work_str;
     struct dsc$descriptor_d foreign_cmdline;
+    struct dsc$descriptor_d output_directory;
+    struct dsc$descriptor_d password_arg;
 
     init_dyndesc(work_str);
     init_dyndesc(foreign_cmdline);
+    init_dyndesc(output_directory);
+    init_dyndesc(password_arg);
 
     /*
     **  See if the program was invoked by the CLI (SET COMMAND) or by
-    **  a foreign command definition.  Check for /YYZ_ZIP, which is a
+    **  a foreign command definition.  Check for /YYZ_UNZIP, which is a
     **  valid default qualifier solely for this test.
     */
-    show_VMSCLI_help = TRUE;
+    show_VMSCLI_usage = TRUE;
     status = check_cli(&cli_yyz);
     if (!(status & 1)) {
         lib$get_foreign(&foreign_cmdline);
@@ -393,12 +270,12 @@ vms_zip_cmdline (int *argc_p, char ***argv_p)
             ((foreign_cmdline.dsc$w_length > 1) &&
              (*(foreign_cmdline.dsc$a_pointer) == '"') &&
              (*(foreign_cmdline.dsc$a_pointer + 1) == '-'))) {
-            show_VMSCLI_help = FALSE;
+            show_VMSCLI_usage = FALSE;
             return (SS$_NORMAL);
         }
 
-        str$concat(&work_str, &zip_command, &foreign_cmdline);
-        status = cli$dcl_parse(&work_str, &zip_clitable, lib$get_input,
+        str$concat(&work_str, &unzip_command, &foreign_cmdline);
+        status = cli$dcl_parse(&work_str, &vms_unzip_cld, lib$get_input,
                         lib$get_input, 0);
         if (!(status & 1)) return (status);
     }
@@ -409,8 +286,8 @@ vms_zip_cmdline (int *argc_p, char ***argv_p)
     if ((the_cmd_line = (char *) malloc(cmdl_size = ARGBSIZE_UNIT)) == NULL)
         return (SS$_INSFMEM);
 
-    strcpy(the_cmd_line, "zip");
-    cmdl_len = sizeof("zip");
+    strcpy(the_cmd_line, "unzip");
+    cmdl_len = sizeof("unzip");
 
     /*
     **  First, check to see if any of the regular options were specified.
@@ -420,511 +297,282 @@ vms_zip_cmdline (int *argc_p, char ***argv_p)
     ptr = &options[1];          /* Point to temporary buffer */
 
     /*
-    **  Copy entries.
+    **  Is it ZipInfo??
     */
-    status = cli$present(&cli_copy_entries);
-    if (status & 1)
-        /* /COPY_ENTRIES */
-        *ptr++ = 'U';
+    zipinfo = 0;
+    status = cli$present(&cli_information);
+    if (status & 1) {
+
+        zipinfo = 1;
+
+        *ptr++ = 'Z';
+
+        if (cli$present(&cli_one_line) & 1)
+            *ptr++ = '2';
+        if (cli$present(&cli_short) & 1)
+            *ptr++ = 's';
+        if (cli$present(&cli_medium) & 1)
+            *ptr++ = 'm';
+        if (cli$present(&cli_long) & 1)
+            *ptr++ = 'l';
+        if (cli$present(&cli_verbose) & 1)
+            *ptr++ = 'v';
+        if (cli$present(&cli_header) & 1)
+            *ptr++ = 'h';
+        if (cli$present(&cli_comment) & 1)
+            *ptr++ = 'c';
+        if (cli$present(&cli_totals) & 1)
+            *ptr++ = 't';
+        if (cli$present(&cli_times) & 1)
+            *ptr++ = 'T';
+
+    }
+    else {
+
+#if 0
+    /*
+    **  Extract files?
+    */
+    status = cli$present(&cli_extract);
+    if (status == CLI$_NEGATED)
+        *ptr++ = '-';
+    if (status != CLI$_ABSENT)
+        *ptr++ = 'x';
+#endif
 
     /*
-    **  Delete the specified files from the zip file?
+    **  Write binary files in VMS binary (fixed-length, 512-byte records,
+    **  record attributes: none) format
+    **  (auto-convert, or force to convert all files)
     */
-    status = cli$present(&cli_delete);
-    if (status & 1)
-        /* /DELETE */
-        *ptr++ = 'd';
+    status = cli$present(&cli_binary);
+    if (status != CLI$_ABSENT) {
+        *ptr++ = '-';
+        *ptr++ = '-';
+        *ptr++ = 'b';
+        if ((status & 1) &&
+            !((status = cli$present(&cli_binary_none)) & 1)) {
+            *ptr++ = 'b';
+            if ((status = cli$present(&cli_binary_all)) & 1)
+                *ptr++ = 'b';
+        }
+    }
 
     /*
-    **  Freshen (only changed files).
+    **  Convert files as text (CR LF -> LF, etc.)
+    **  (auto-convert, or force to convert all files)
+    */
+    status = cli$present(&cli_text);
+    if (status != CLI$_ABSENT) {
+        *ptr++ = '-';
+        *ptr++ = '-';
+        *ptr++ = 'a';
+        if ((status & 1) &&
+            !((status = cli$present(&cli_text_none)) & 1)) {
+            *ptr++ = 'a';
+            if ((status = cli$present(&cli_text_all)) & 1)
+                *ptr++ = 'a';
+        }
+    }
+
+    /*
+    **  Extract files to screen?
+    */
+    status = cli$present(&cli_screen);
+    if (status == CLI$_NEGATED)
+        *ptr++ = '-';
+    if (status != CLI$_ABSENT)
+        *ptr++ = 'c';
+
+    /*
+    **  Re-create directory structure?  (default)
+    */
+    status = cli$present(&cli_directory);
+    if (status == CLI$_PRESENT) {
+        status = cli$get_value(&cli_directory, &output_directory);
+    }
+
+    /*
+    **  Freshen existing files, create none
     */
     status = cli$present(&cli_freshen);
-    if (status & 1)
-        /* /FRESHEN */
+    if (status == CLI$_NEGATED)
+        *ptr++ = '-';
+    if (status != CLI$_ABSENT)
         *ptr++ = 'f';
-
-    /*
-    **  Delete the files once they've been added to the zip file.
-    */
-    status = cli$present(&cli_move);
-    if (status & 1)
-        /* /MOVE */
-        *ptr++ = 'm';
-
-    /*
-    **  Add changed and new files.
-    */
-    status = cli$present(&cli_update);
-    if (status & 1)
-        /* /UPDATE */
-        *ptr++ = 'u';
-
-    /*
-    **  Check for the compression level (-0 through -9).
-    */
-    status = cli$present(&cli_level);
-    if (status & 1) {
-        /* /LEVEL = value */
-
-        unsigned long binval;
-
-        status = cli$get_value(&cli_level, &work_str);
-        status = ots$cvt_tu_l(&work_str, &binval);
-        if (!(status & 1) || (binval > 9)) {
-           return (SS$_ABORT);
-        }
-        *ptr++ = binval + '0';
-    }
-
-    /*
-    **  Adjust offsets of zip archive entries.
-    */
-    status = cli$present(&cli_adjust);
-    if (status & 1)
-        /* /ADJUST_OFFSETS */
-        *ptr++ = 'A';
-
-    /*
-    **  Add comments?
-    */
-    status = cli$present(&cli_comments);
-    if (status & 1)
-    {
-        int archive_or_zip_file = 0;
-
-        if ((status = cli$present(&cli_comment_archive)) & 1)
-            /* /COMMENTS = ARCHIVE */
-            archive_or_zip_file = 1;
-        if ((status = cli$present(&cli_comment_zipfile)) & 1)
-            /* /COMMENTS = ZIP_FILE */
-            archive_or_zip_file = 1;
-        if (archive_or_zip_file != 0)
-            /* /COMMENTS = ARCHIVE */
-            *ptr++ = 'z';
-        if ((status = cli$present(&cli_comment_files)) & 1)
-            /* /COMMENTS = FILES */
-            *ptr++ = 'c';
-    }
-
-    /*
-    **  Preserve case in file names.
-    */
-#define OPT_C   "-C"            /* Preserve case all. */
-#define OPT_CN  "-C-"           /* Down-case all. */
-#define OPT_C2  "-C2"           /* Preserve case ODS2. */
-#define OPT_C2N "-C2-"          /* Down-case ODS2. */
-#define OPT_C5  "-C5"           /* Preserve case ODS5. */
-#define OPT_C5N "-C5-"          /* Down-case ODS5. */
-
-    status = cli$present( &cli_pres_case);
-    if ((status & 1) || (status == CLI$_NEGATED))
-    {
-        /* /[NO]PRESERVE_CASE */
-        char *opt;
-        int ods2 = 0;
-        int ods5 = 0;
-
-        if (status == CLI$_NEGATED)
-        {
-            x = cmdl_len;
-            cmdl_len += strlen( OPT_CN)+ 1;
-            CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-            strcpy( &the_cmd_line[ x], OPT_CN);
-        }
-        else
-        {
-            if (cli$present( &cli_pres_case_no2) & 1)
-            {
-                /* /PRESERVE_CASE = NOODS2 */
-                ods2 = -1;
-            }
-            if (cli$present( &cli_pres_case_no5) & 1)
-            {
-                /* /PRESERVE_CASE = NOODS5 */
-                ods5 = -1;
-            }
-            if (cli$present( &cli_pres_case_ods2) & 1)
-            {
-                /* /PRESERVE_CASE = ODS2 */
-                ods2 = 1;
-            }
-            if (cli$present( &cli_pres_case_ods5) & 1)
-            {
-                /* /PRESERVE_CASE = ODS5 */
-                ods5 = 1;
-            }
-
-            if (ods2 == ods5)
-            {
-                /* Plain "-C[-]". */
-                if (ods2 < 0)
-                    opt = OPT_CN;
-                else
-                    opt = OPT_C;
-
-                x = cmdl_len;
-                cmdl_len += strlen( opt)+ 1;
-                CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-                strcpy( &the_cmd_line[ x], opt);
-            }
-            else
-            {
-                if (ods2 != 0)
-                {
-                    /* "-C2[-]". */
-                    if (ods2 < 0)
-                        opt = OPT_C2N;
-                    else
-                        opt = OPT_C2;
-
-                    x = cmdl_len;
-                    cmdl_len += strlen( opt)+ 1;
-                    CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-                    strcpy( &the_cmd_line[ x], opt);
-                }
-
-                if (ods5 != 0)
-                {
-                    /* "-C5[-]". */
-                    if (ods5 < 0)
-                        opt = OPT_C5N;
-                    else
-                        opt = OPT_C5;
-
-                    x = cmdl_len;
-                    cmdl_len += strlen( opt)+ 1;
-                    CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-                    strcpy( &the_cmd_line[ x], opt);
-                }
-            }
-        }
-    }
-
-    /*
-    **  Pattern case sensitivity.
-    */
-#define OPT_IC  "-ic"           /* Case-insensitive pattern matching. */
-#define OPT_ICN "-ic-"          /* Case-sensitive pattern matching. */
-
-    status = cli$present( &cli_patt_case);
-    if (status & 1)
-    {
-        if (cli$present( &cli_patt_case_blind) & 1)
-        {
-            /* "-ic". */
-            x = cmdl_len;
-            cmdl_len += strlen( OPT_IC)+ 1;
-            CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-            strcpy( &the_cmd_line[ x], OPT_IC);
-        }
-        else if (cli$present( &cli_patt_case_sensitive) & 1)
-        {
-            /* "-ic-". */
-            x = cmdl_len;
-            cmdl_len += strlen( OPT_ICN)+ 1;
-            CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-            strcpy( &the_cmd_line[ x], OPT_ICN);
-        }
-    }
-
-    /*
-    **  Data descriptors.
-    */
-#define OPT_FD "-fd"
-
-    status = cli$present( &cli_descriptors);
-    if (status & 1)
-    {
-        /* /DESCRIPTORS */
-        x = cmdl_len;
-        cmdl_len += strlen( OPT_FD)+ 1;
-        CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-        strcpy( &the_cmd_line[ x], OPT_FD);
-    }
-
-    /*
-    **  Difference archive.  Add only new or changed files.
-    */
-#define OPT_DF   "-DF"          /* Difference archive. */
-
-    if ((status = cli$present( &cli_difference)) & 1)
-    {
-        /* /DIFFERENCE */
-        x = cmdl_len;
-        cmdl_len += strlen( OPT_DF)+ 1;
-        CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-        strcpy( &the_cmd_line[ x],  OPT_DF);
-    }
-
-    /*
-    **  Do not add/modify directory entries.
-    */
-    status = cli$present(&cli_dirnames);
-    if (!(status & 1))
-        /* /DIRNAMES */
-        *ptr++ = 'D';
-
-    /*
-    **  Encrypt?
-    */
-    status = cli$present(&cli_encrypt);
-    if (status & 1)
-        if ((status = cli$get_value(&cli_encrypt, &work_str)) & 1) {
-            /* /ENCRYPT = value */
-            x = cmdl_len;
-            cmdl_len += work_str.dsc$w_length + 4;
-            CHECK_BUFFER_ALLOCATION(the_cmd_line, cmdl_size, cmdl_len)
-            strcpy(&the_cmd_line[x], "-P");
-            strncpy(&the_cmd_line[x+3], work_str.dsc$a_pointer,
-                    work_str.dsc$w_length);
-            the_cmd_line[cmdl_len-1] = '\0';
-        } else {
-            /* /ENCRYPT */
-            *ptr++ = 'e';
-        }
-
-    /*
-    **  Fix the zip archive structure.
-    */
-    status = cli$present(&cli_fix_archive);
-    if (status & 1) {
-        *ptr++ = 'F';
-        /* /FIX_ARCHIVE = NORMAL */
-        if ((status = cli$present(&cli_fix_full)) & 1) {
-            /* /FIX_ARCHIVE = FULL */
-            *ptr++ = 'F';
-        }
-    }
-
-    /*
-    **  Filesync.  Delete archive entry if no such file.
-    */
-#define OPT_FS   "-FS"          /* Filesync. */
-
-    if ((status = cli$present( &cli_filesync)) & 1)
-    {
-        /* /FILESYNC */
-        x = cmdl_len;
-        cmdl_len += strlen( OPT_FS)+ 1;
-        CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-        strcpy( &the_cmd_line[ x],  OPT_FS);
-    }
-
-    /*
-    **  Append (allow growing of existing zip file).
-    */
-    status = cli$present(&cli_append);
-    if (status & 1)
-        /* /APPEND */
-        *ptr++ = 'g';
-
-    status = cli$present(&cli_grow);
-    if (status & 1)
-        /* /GROW */
-        *ptr++ = 'g';
 
     /*
     **  Show the help.
     */
-#define OPT_H2 "-h2"
-
     status = cli$present(&cli_help);
     if (status & 1)
-    {
-        status = cli$present( &cli_help_normal);
-        if (status & 1)
-        {
-            /* /HELP [= NORMAL] */
-            *ptr++ = 'h';
-        }
-        status = cli$present( &cli_help_extended);
-        if (status & 1)
-        {
-            /* /HELP = EXTENDED */
-            x = cmdl_len;
-            cmdl_len += strlen( OPT_H2)+ 1;
-            CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-            strcpy( &the_cmd_line[ x], OPT_H2);
-        }
-    }
+        *ptr++ = 'h';
 
     /*
-    **  Junk path names (directory specs).
+    **  Junk stored directory names on unzip
     */
     status = cli$present(&cli_junk);
-    if (status & 1)
-        /* /JUNK */
+    if (status == CLI$_NEGATED)
+        *ptr++ = '-';
+    if (status != CLI$_ABSENT)
         *ptr++ = 'j';
 
     /*
-    **  Simulate zip file made by PKZIP.
+    **  List contents (/BRIEF or /FULL (default))
     */
-    status = cli$present(&cli_pkzip);
-    if (status & 1)
-        /* /KEEP_VERSION */
-        *ptr++ = 'k';
-
-    /*
-    **  Translate end-of-line.
-    */
-    status = cli$present(&cli_translate_eol);
+    status = cli$present(&cli_list);
     if (status & 1) {
-        /* /TRANSLATE_EOL [= LF]*/
-        *ptr++ = 'l';
-        if ((status = cli$present(&cli_transl_eol_crlf)) & 1) {
-            /* /TRANSLATE_EOL = CRLF */
-            *ptr++ = 'l';
-        }
+        if (cli$present(&cli_full) & 1)
+           *ptr++ = 'v';
+        else
+           *ptr++ = 'l';
     }
 
     /*
-    **  Show the software license.
+    **  Overwrite files?
     */
-    status = cli$present(&cli_license);
-    if (status & 1)
-        /* /LICENSE */
-        *ptr++ = 'L';
-
-    /*
-    **  Set zip file time to time of latest file in it.
-    */
-    status = cli$present(&cli_latest);
-    if (status & 1)
-        /* /LATEST */
+    status = cli$present(&cli_overwrite);
+    if (status == CLI$_NEGATED)
+        *ptr++ = 'n';
+    else if (status != CLI$_ABSENT)
         *ptr++ = 'o';
 
     /*
-    **  Store full path (default).
+    **  Decryption password from command line?
     */
-    status = cli$present(&cli_full_path);
-    if (status == CLI$_PRESENT)
-        /* /FULL_PATH */
+    status = cli$present(&cli_password);
+    if (status == CLI$_PRESENT) {
+        status = cli$get_value(&cli_password, &password_arg);
+    }
+
+    /*
+    **  Pipe files to SYS$OUTPUT with no informationals?
+    */
+    status = cli$present(&cli_pipe);
+    if (status != CLI$_ABSENT)
         *ptr++ = 'p';
-    else if (status == CLI$_NEGATED)
-        /* /NOFULL_PATH */
-        *ptr++ = 'j';
 
     /*
-    **  Junk Zipfile prefix (SFX stub etc.).
-    */
-    status = cli$present(&cli_unsfx);
-    if (status & 1)
-        /* /UNSFX */
-        *ptr++ = 'J';
-
-    /*
-    **  Recurse through subdirectories.
-    */
-    status = cli$present(&cli_recurse);
-    if (status & 1) {
-        if ((status = cli$present(&cli_recurse_fnames)) & 1)
-            /* /RECURSE [= PATH] */
-            *ptr++ = 'R';
-        else
-            /* /RECURSE [= FILENAMES] */
-            *ptr++ = 'r';
-    }
-
-    /*
-    **  Test Zipfile.
-    */
-    status = cli$present(&cli_test);
-    if (status & 1) {
-        /* /TEST */
-        *ptr++ = 'T';
-    }
-
-    /*
-    **  Be verbose.
-    */
-    status = cli$present(&cli_verbose);
-    if (status & 1) {
-        int i;
-        int verbo = 0;
-
-        /* /VERBOSE */
-        if ((status = cli$present(&cli_verbose_command)) & 1)
-        {
-            /* /VERBOSE = COMMAND */
-            verbose_command = 1;
-        }
-
-        /* Note that any or all of the following options may be
-           specified, and the maximum one is used.
-        */
-        if ((status = cli$present(&cli_verbose_normal)) & 1)
-            /* /VERBOSE [ = NORMAL ] */
-            verbo = 1;
-        if ((status = cli$present(&cli_verbose_more)) & 1)
-            /* /VERBOSE = MORE */
-            verbo = 2;
-        if ((status = cli$present(&cli_verbose_debug)) & 1) {
-            /* /VERBOSE = DEBUG */
-            verbo = 3;
-        }
-        for (i = 0; i < verbo; i++)
-            *ptr++ = 'v';
-    }
-
-    /*
-    **  Quiet mode.
-    **  (Quiet mode is processed after verbose, because a "-v" modifier
-    **  resets "noisy" to 1.)
+    **  Quiet
     */
     status = cli$present(&cli_quiet);
-    if (status & 1)
-        /* /QUIET */
+    if (status & 1) {
         *ptr++ = 'q';
+        if ((status = cli$present(&cli_super_quiet)) & 1)
+            *ptr++ = 'q';
+    }
 
     /*
-    **  Save the VMS file attributes (and all allocated blocks?).
+    **  Test archive integrity
     */
-    status = cli$present(&cli_vms);
-    if (status & 1) {
-        /* /VMS */
+    status = cli$present(&cli_test);
+    if (status == CLI$_NEGATED)
+        *ptr++ = '-';
+    if (status != CLI$_ABSENT)
+        *ptr++ = 't';
+
+    /*
+    **  Traverse directories (don't skip "../" path components)
+    */
+    status = cli$present(&cli_traverse);
+    if (status == CLI$_NEGATED)
+        *ptr++ = '-';
+    if (status != CLI$_ABSENT)
+        *ptr++ = ':';
+
+    /*
+    **  Make (some) names lowercase
+    */
+    status = cli$present(&cli_lowercase);
+    if (status == CLI$_NEGATED)
+        *ptr++ = '-';
+    if (status != CLI$_ABSENT)
+        *ptr++ = 'L';
+
+    /*
+    **  Uppercase (don't convert to lower)
+    */
+    status = cli$present(&cli_uppercase);
+    if (status == CLI$_NEGATED)
+        *ptr++ = '-';
+    if (status != CLI$_ABSENT)
+        *ptr++ = 'U';
+
+    /*
+    **  Update (extract only new and newer files)
+    */
+    status = cli$present(&cli_update);
+    if (status == CLI$_NEGATED)
+        *ptr++ = '-';
+    if (status != CLI$_ABSENT)
+        *ptr++ = 'u';
+
+    /*
+    **  Version (retain VMS/DEC-20 file versions)
+    */
+    status = cli$present(&cli_version);
+    if (status == CLI$_NEGATED)
+        *ptr++ = '-';
+    if (status != CLI$_ABSENT)
         *ptr++ = 'V';
-        if ((status = cli$present(&cli_vms_all)) & 1) {
-            /* /VMS = ALL */
-            *ptr++ = 'V';
-        }
+
+    /*
+    **  Restore owner/protection info
+    */
+    status = cli$present(&cli_restore);
+    if (status == CLI$_NEGATED)
+        *ptr++ = '-';
+    if (status != CLI$_ABSENT)
+        *ptr++ = 'X';
+
+    /*
+    **  Display only the archive comment
+    */
+    status = cli$present(&cli_comment);
+    if (status == CLI$_NEGATED)
+        *ptr++ = '-';
+    if (status != CLI$_ABSENT)
+        *ptr++ = 'z';
+
+    }   /* ZipInfo check way up there.... */
+
+    /* The following options are common to both UnZip and ZipInfo mode. */
+
+    /*
+    **  Match filenames case-insensitively (-C)
+    */
+    status = cli$present(&cli_case_insensitive);
+    if (status == CLI$_NEGATED)
+        *ptr++ = '-';
+    if (status != CLI$_ABSENT)
+        *ptr++ = 'C';
+
+    /*
+    **  Use builtin pager for all screen output
+    */
+    status = cli$present(&cli_page);
+    if (status == CLI$_NEGATED)
+        *ptr++ = '-';
+    if (status != CLI$_ABSENT)
+        *ptr++ = 'M';
+
+    /*
+    **  Check existence of a list of files to exclude, fetch is done later.
+    */
+    status = cli$present(&cli_exclude);
+    exclude_list = ((status & 1) != 0);
+
+    /*
+    **  If the user didn't give any DCL qualifier, assume he wants the
+    **  Un*x interface.
+    if ( (ptr == &options[1]) &&
+         (output_directory.dsc$w_length == 0) &&
+         (password_arg.dsc$w_length == 0) &&
+         (!exclude_list)  ) {
+        free(the_cmd_line);
+        return (SS$_NORMAL);
     }
-
-    /*
-    **  Keep the VMS version number as part of the file name when stored.
     */
-    status = cli$present(&cli_keep_version);
-    if (status & 1)
-        /* /KEEP_VERSION */
-        *ptr++ = 'w';
-
-    /*
-    **  Store symlinks as symlinks.
-    */
-    status = cli$present(&cli_symlinks);
-    if (status & 1)
-        /* /SYMLINKS */
-        *ptr++ = 'y';
-
-    /*
-    **  `Batch' processing: read filenames to archive from stdin
-    **  or the specified file.
-    */
-    status = cli$present(&cli_batch);
-    if (status & 1) {
-        /* /BATCH */
-        status = cli$get_value(&cli_batch, &work_str);
-        if (status & 1) {
-            /* /BATCH = value */
-            work_str.dsc$a_pointer[work_str.dsc$w_length] = '\0';
-            if ((stdin = freopen(work_str.dsc$a_pointer, "r", stdin)) == NULL)
-            {
-                sprintf(errbuf, "could not open list file: %s",
-                        work_str.dsc$a_pointer);
-                ziperr(ZE_PARMS, errbuf);
-            }
-        }
-        *ptr++ = '@';
-    }
 
     /*
     **  Now copy the final options string to the_cmd_line.
@@ -939,480 +587,22 @@ vms_zip_cmdline (int *argc_p, char ***argv_p)
     }
 
     /*
-    **
-    **  OK.  We've done all the regular options, so check for -b (temporary
-    **  file path), -n (special suffixes), -O (output atchive file),
-    **  -t (exclude before time), -Z (compression method), zipfile,
-    **  files to zip, and exclude list.
-    **
-    */
-    status = cli$present(&cli_temp_path);
-    if (status & 1) {
-        /* /TEMP_PATH = value */
-        status = cli$get_value(&cli_temp_path, &work_str);
+    **  If specified, add the decryption password argument.
+    **/
+    if (password_arg.dsc$w_length != 0) {
         x = cmdl_len;
-        cmdl_len += work_str.dsc$w_length + 4;
+        cmdl_len += password_arg.dsc$w_length + 4;
         CHECK_BUFFER_ALLOCATION(the_cmd_line, cmdl_size, cmdl_len)
-        strcpy(&the_cmd_line[x], "-b");
-        strncpy(&the_cmd_line[x+3], work_str.dsc$a_pointer,
-                work_str.dsc$w_length);
+        strcpy(&the_cmd_line[x], "-P");
+        strncpy(&the_cmd_line[x+3], password_arg.dsc$a_pointer,
+                password_arg.dsc$w_length);
         the_cmd_line[cmdl_len-1] = '\0';
-    }
-
-    status = cli$present(&cli_output);
-    if (status & 1) {
-        /* /OUTPUT = value */
-        status = cli$get_value(&cli_output, &work_str);
-        x = cmdl_len;
-        cmdl_len += work_str.dsc$w_length + 4;
-        CHECK_BUFFER_ALLOCATION(the_cmd_line, cmdl_size, cmdl_len)
-        strcpy(&the_cmd_line[x], "-O");
-        strncpy(&the_cmd_line[x+3], work_str.dsc$a_pointer,
-                work_str.dsc$w_length);
-        the_cmd_line[cmdl_len-1] = '\0';
-    }
-
-    /*
-    **  Handle "-db", "-dc", "-dd", "-ds".
-    */
-#define OPT_DB "-db"
-#define OPT_DC "-dc"
-#define OPT_DD "-dd"
-#define OPT_DG "-dg"
-#define OPT_DS "-ds="
-#define OPT_DU "-du"
-#define OPT_DV "-dv"
-
-    status = cli$present( &cli_display);
-    if (status & 1)
-    {
-        if ((status = cli$present( &cli_display_bytes)) & 1)
-        {
-            /* /DISPLAY = BYTES */
-            x = cmdl_len;
-            cmdl_len += strlen( OPT_DB)+ 1;
-            CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-            strcpy( &the_cmd_line[ x], OPT_DB);
-        }
-
-        if ((status = cli$present( &cli_display_counts)) & 1)
-        {
-            /* /DISPLAY = COUNTS */
-            x = cmdl_len;
-            cmdl_len += strlen( OPT_DC)+ 1;
-            CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-            strcpy( &the_cmd_line[ x],  OPT_DC);
-        }
-
-        if ((status = cli$present( &cli_display_dots)) & 1)
-        {
-            /* /DISPLAY = DOTS [= value] */
-            status = cli$get_value( &cli_display_dots, &work_str);
-
-            x = cmdl_len;
-            cmdl_len += strlen( OPT_DD)+ 1;
-            CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-            strcpy( &the_cmd_line[ x], OPT_DD);
-
-            /* -dd[=value] now -dd -ds=value - 5/8/05 EG */
-            if (work_str.dsc$w_length > 0) {
-                x = cmdl_len;
-                cmdl_len += strlen( OPT_DS);
-                CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-                strcpy( &the_cmd_line[ x], OPT_DS);
-
-                x = cmdl_len;
-                cmdl_len += work_str.dsc$w_length+ 1;
-                CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-                strncpy( &the_cmd_line[ x],
-                 work_str.dsc$a_pointer, work_str.dsc$w_length);
-            }
-        }
-
-        if ((status = cli$present( &cli_display_globaldots)) & 1)
-        {
-            /* /DISPLAY = GLOBALDOTS */
-            x = cmdl_len;
-            cmdl_len += strlen( OPT_DG)+ 1;
-            CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-            strcpy( &the_cmd_line[ x],  OPT_DG);
-        }
-
-        if ((status = cli$present( &cli_display_usize)) & 1)
-        {
-            /* /DISPLAY = USIZE */
-            x = cmdl_len;
-            cmdl_len += strlen( OPT_DU)+ 1;
-            CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-            strcpy( &the_cmd_line[ x],  OPT_DU);
-        }
-
-        if ((status = cli$present( &cli_display_volume)) & 1)
-        {
-            /* /DISPLAY = VOLUME */
-            x = cmdl_len;
-            cmdl_len += strlen( OPT_DV)+ 1;
-            CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-            strcpy( &the_cmd_line[ x],  OPT_DV);
-        }
-    }
-
-    /*
-    **  Handle "-la", "-lf", "-li".
-    */
-#define OPT_LA "-la"
-#define OPT_LF "-lf"
-#define OPT_LI "-li"
-
-    status = cli$present( &cli_log_file);
-    if (status & 1)
-    {
-        /* /SHOW */
-        if ((status = cli$present( &cli_log_file_append)) & 1)
-        {
-            /* /LOG_FILE = APPEND */
-            x = cmdl_len;
-            cmdl_len += strlen( OPT_LA)+ 1;
-            CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-            strcpy( &the_cmd_line[ x], OPT_LA);
-        }
-
-        status = cli$present(&cli_log_file_file);
-        if (status & 1) {
-            /* /LOG_FILE = FILE = file */
-            status = cli$get_value(&cli_log_file_file, &work_str);
-            x = cmdl_len;
-            cmdl_len += strlen( OPT_LF)+ 2+ work_str.dsc$w_length;
-            CHECK_BUFFER_ALLOCATION(the_cmd_line, cmdl_size, cmdl_len)
-            strcpy(&the_cmd_line[x], OPT_LF);
-            strncpy(&the_cmd_line[x+strlen( OPT_LF)+ 1], work_str.dsc$a_pointer,
-                work_str.dsc$w_length);
-            the_cmd_line[cmdl_len-1] = '\0';
-        }
-
-        if ((status = cli$present( &cli_log_file_info)) & 1)
-        {
-            /* /LOG = INFO */
-            x = cmdl_len;
-            cmdl_len += strlen( OPT_LI)+ 1;
-            CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-            strcpy( &the_cmd_line[ x],  OPT_LI);
-        }
-    }
-
-    /*
-    **  Handle "-s", "-sb", "-sp", "-sv".
-    */
-#define OPT_S "-s"
-#define OPT_SB "-sb"
-#define OPT_SP "-sp"
-#define OPT_SV "-sv"
-
-    status = cli$present( &cli_split);
-    if (status & 1)
-    {
-        status = cli$present( &cli_split_bell);
-        if (status & 1)
-        {
-            /* /SPLIT = BELL */
-            x = cmdl_len;
-            cmdl_len += strlen( OPT_SB)+ 1;
-            CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-            strcpy( &the_cmd_line[ x], OPT_SB);
-        }
-
-        status = cli$present( &cli_split_pause);
-        if (status & 1)
-        {
-            /* /SPLIT = PAUSE */
-            x = cmdl_len;
-            cmdl_len += strlen( OPT_SP)+ 1;
-            CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-            strcpy( &the_cmd_line[ x], OPT_SP);
-        }
-
-        status = cli$present( &cli_split_size);
-        if (status & 1)
-        {
-            /* /SPLIT = SIZE = size */
-            status = cli$get_value( &cli_split_size, &work_str);
-
-            x = cmdl_len;
-            cmdl_len += strlen( OPT_S)+ 1;
-            CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-            strcpy( &the_cmd_line[ x], OPT_S);
-
-            x = cmdl_len;
-            cmdl_len += work_str.dsc$w_length+ 1;
-            strncpy( &the_cmd_line[ x],
-             work_str.dsc$a_pointer, work_str.dsc$w_length);
-        }
-
-        status = cli$present( &cli_split_verbose);
-        if (status & 1)
-        {
-            /* /SPLIT = VERBOSE */
-            x = cmdl_len;
-            cmdl_len += strlen( OPT_SV)+ 1;
-            CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-            strcpy( &the_cmd_line[ x], OPT_SV);
-        }
-    }
-
-    /*
-    **  Handle "-sc", "-sd", "-sf", "-so".
-    */
-#define OPT_SC "-sc"
-#define OPT_SD "-sd"
-#define OPT_SF "-sf"
-#define OPT_SO "-so"
-
-    status = cli$present( &cli_show);
-    if (status & 1)
-    {
-        /* /SHOW */
-        if ((status = cli$present( &cli_show_command)) & 1)
-        {
-            /* /SHOW = COMMAND */
-            x = cmdl_len;
-            cmdl_len += strlen( OPT_SC)+ 1;
-            CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-            strcpy( &the_cmd_line[ x], OPT_SC);
-        }
-
-        if ((status = cli$present( &cli_show_debug)) & 1)
-        {
-            /* /SHOW = DEBUG */
-            x = cmdl_len;
-            cmdl_len += strlen( OPT_SD)+ 1;
-            CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-            strcpy( &the_cmd_line[ x],  OPT_SD);
-        }
-
-        if ((status = cli$present( &cli_show_files)) & 1)
-        {
-            /* /SHOW = FILES */
-            x = cmdl_len;
-            cmdl_len += strlen( OPT_SF)+ 1;
-            CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-            strcpy( &the_cmd_line[ x], OPT_SF);
-        }
-
-        if ((status = cli$present( &cli_show_options)) & 1)
-        {
-            /* /SHOW = OPTIONS */
-            x = cmdl_len;
-            cmdl_len += strlen( OPT_SO)+ 1;
-            CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-            strcpy( &the_cmd_line[ x], OPT_SO);
-        }
-    }
-
-    /*
-    **  Handle "-fz".
-    */
-#define OPT_FZ "-fz"
-
-    status = cli$present( &cli_zip64);
-    if (status & 1)
-    {
-        /* /ZIP64 */
-        x = cmdl_len;
-        cmdl_len += strlen( OPT_FZ)+ 1;
-        CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-        strcpy( &the_cmd_line[ x], OPT_FZ);
-    }
-
-    /*
-    **  Handle "-nw" and "-W".
-    */
-#define OPT_NW "-nw"
-#define OPT_W "-W"
-
-    status = cli$present( &cli_wildcard);
-    if (status & 1)
-    {
-        if ((status = cli$present( &cli_wildcard_nospan)) & 1)
-        {
-            /* /WILDCARD = NOSPAN */
-            x = cmdl_len;
-            cmdl_len += strlen( OPT_W)+ 1;
-            CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-            strcpy( &the_cmd_line[ x], OPT_W);
-        }
-    }
-    else if (status == CLI$_NEGATED)
-    {
-        /* /NOWILDCARD */
-        x = cmdl_len;
-        cmdl_len += strlen( OPT_NW)+ 1;
-        CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-        strcpy( &the_cmd_line[ x], OPT_NW);
-    }
-
-    /*
-    **  Handle "-MM".
-    */
-#define OPT_MM  "-MM"
-
-    status = cli$present( &cli_must_match);
-    if (status & 1)
-    {
-        /* /MUST_MATCH */
-        x = cmdl_len;
-        cmdl_len += strlen( OPT_MM)+ 1;
-        CHECK_BUFFER_ALLOCATION(the_cmd_line, cmdl_size, cmdl_len)
-        strcpy( &the_cmd_line[ x], OPT_MM);
-    }
-
-    /*
-    **  UnZip command for archive test.
-    */
-#define OPT_TT "-TT"
-
-    status = cli$present(&cli_test);
-    if (status & 1) {
-        /* /TEST */
-        status = cli$present(&cli_test_unzip);
-        if (status & 1) {
-            /* /TEST = UNZIP = value */
-            status = cli$get_value(&cli_test_unzip, &work_str);
-            x = cmdl_len;
-            cmdl_len += strlen( OPT_TT)+ 2+ work_str.dsc$w_length;
-            CHECK_BUFFER_ALLOCATION(the_cmd_line, cmdl_size, cmdl_len)
-            strcpy(&the_cmd_line[x], OPT_TT);
-            strncpy(&the_cmd_line[x+strlen( OPT_TT)+ 1], work_str.dsc$a_pointer,
-                work_str.dsc$w_length);
-            the_cmd_line[cmdl_len-1] = '\0';
-        }
-    }
-
-    /*
-    **  Handle "-Z".
-    */
-#define OPT_ZB "-Zb"
-#define OPT_ZD "-Zd"
-#define OPT_ZS "-Zs"
-
-    status = cli$present( &cli_compression);
-    if (status & 1)
-    {
-        if ((status = cli$present( &cli_compression_b)) & 1)
-        {
-            /* /COMPRESSION = BZIP2 */
-            x = cmdl_len;
-            cmdl_len += strlen( OPT_ZB)+ 1;
-            CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-            strcpy( &the_cmd_line[ x], OPT_ZB);
-        }
-
-        if ((status = cli$present( &cli_compression_d)) & 1)
-        {
-            /* /COMPRESSION = DEFLATE */
-            x = cmdl_len;
-            cmdl_len += strlen( OPT_ZD)+ 1;
-            CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-            strcpy( &the_cmd_line[ x], OPT_ZD);
-        }
-
-        if ((status = cli$present( &cli_compression_s)) & 1)
-        {
-            /* /COMPRESSION = STORE */
-            x = cmdl_len;
-            cmdl_len += strlen( OPT_ZS)+ 1;
-            CHECK_BUFFER_ALLOCATION( the_cmd_line, cmdl_size, cmdl_len)
-            strcpy( &the_cmd_line[ x], OPT_ZS);
-        }
-    }
-
-    /*
-    **  Handle "-t mmddyyyy".
-    */
-    status = cli$present(&cli_since);
-    if (status & 1) {
-        /* /SINCE = value */
-        char since_time[9];
-
-        status = get_time(&cli_since, &since_time[0]);
-        if (!(status & 1)) return (status);
-
-        /*
-        **  Now let's add the option "-t mmddyyyy" to the new command line.
-        */
-        x = cmdl_len;
-        cmdl_len += (3 + 9);
-        CHECK_BUFFER_ALLOCATION(the_cmd_line, cmdl_size, cmdl_len)
-        strcpy(&the_cmd_line[x], "-t");
-        strcpy(&the_cmd_line[x+3], since_time);
-    }
-
-    /*
-    **  Handle "-tt mmddyyyy".
-    */
-    status = cli$present(&cli_before);
-    if (status & 1) {
-        /* /BEFORE = value */
-        char before_time[9];
-
-        status = get_time(&cli_before, &before_time[0]);
-        if (!(status & 1)) return (status);
-
-        /*
-        **  Now let's add the option "-tt mmddyyyy" to the new command line.
-        */
-        x = cmdl_len;
-        cmdl_len += (4 + 9);
-        CHECK_BUFFER_ALLOCATION(the_cmd_line, cmdl_size, cmdl_len)
-        strcpy(&the_cmd_line[x], "-tt");
-        strcpy(&the_cmd_line[x+4], before_time);
-    }
-
-    /*
-    **  Handle "-n suffix:suffix:...".  (File types to store only.)
-    */
-    status = cli$present(&cli_store_types);
-    if (status & 1) {
-        /* /STORE_TYPES = value_list */
-        x = cmdl_len;
-        cmdl_len += 3;
-        CHECK_BUFFER_ALLOCATION(the_cmd_line, cmdl_size, cmdl_len)
-        strcpy(&the_cmd_line[x], "-n");
-
-        status = get_list(&cli_store_types, &foreign_cmdline, ':',
-                          &the_cmd_line, &cmdl_size, &cmdl_len);
-        if (!(status & 1)) return (status);
-    }
-
-    /*
-    **  Handle "-X", keep or strip extra fields.
-    */
-#define OPT_X  "-X"
-#define OPT_XN  "-X-"
-
-    status = cli$present(&cli_extra_fields);
-    if (status & 1) {
-        /* /EXTRA_FIELDS */
-        if ((status = cli$present( &cli_extra_fields_keep)) & 1) {
-            /* /EXTRA_FIELDS = KEEP_EXISTING */
-            x = cmdl_len;
-            cmdl_len += strlen( OPT_XN)+ 1;
-            CHECK_BUFFER_ALLOCATION(the_cmd_line, cmdl_size, cmdl_len)
-            strcpy( &the_cmd_line[ x], OPT_XN);
-        }
-    }
-    else if (status == CLI$_NEGATED) {
-        /* /NOEXTRA_FIELDS */
-        x = cmdl_len;
-        cmdl_len += strlen( OPT_X)+ 1;
-        CHECK_BUFFER_ALLOCATION(the_cmd_line, cmdl_size, cmdl_len)
-        strcpy( &the_cmd_line[ x], OPT_X);
     }
 
     /*
     **  Now get the specified zip file name.
     */
     status = cli$present(&cli_zipfile);
-    /* zipfile */
     if (status & 1) {
         status = cli$get_value(&cli_zipfile, &work_str);
 
@@ -1426,38 +616,32 @@ vms_zip_cmdline (int *argc_p, char ***argv_p)
     }
 
     /*
-    **  Run through the list of input files.
+    **  Get the output directory, for UnZip.
+    **/
+    if (output_directory.dsc$w_length != 0) {
+        x = cmdl_len;
+        cmdl_len += output_directory.dsc$w_length + 4;
+        CHECK_BUFFER_ALLOCATION(the_cmd_line, cmdl_size, cmdl_len)
+        strcpy(&the_cmd_line[x], "-d");
+        strncpy(&the_cmd_line[x+3], output_directory.dsc$a_pointer,
+                output_directory.dsc$w_length);
+        the_cmd_line[cmdl_len-1] = '\0';
+    }
+
+    /*
+    **  Run through the list of files to unzip.
     */
     status = cli$present(&cli_infile);
     if (status & 1) {
-        /* infile_list */
         status = get_list(&cli_infile, &foreign_cmdline, '\0',
                           &the_cmd_line, &cmdl_size, &cmdl_len);
         if (!(status & 1)) return (status);
     }
 
     /*
-    **  List file containing exclude patterns present? ("-x@exclude.lst")
+    **  Get the list of files to exclude, if there are any.
     */
-    status = cli$present(&cli_exlist);
-    if (status & 1) {
-        /* /EXLIST = list */
-        status = cli$get_value(&cli_exlist, &work_str);
-        x = cmdl_len;
-        cmdl_len += work_str.dsc$w_length + 4;
-        CHECK_BUFFER_ALLOCATION(the_cmd_line, cmdl_size, cmdl_len)
-        strncpy(&the_cmd_line[x], "-x@", 3);
-        strncpy(&the_cmd_line[x+3], work_str.dsc$a_pointer,
-                work_str.dsc$w_length);
-        the_cmd_line[cmdl_len-1] = '\0';
-    }
-
-    /*
-    **  Any files to exclude? ("-x file file")
-    */
-    status = cli$present(&cli_exclude);
-    if (status & 1) {
-        /* /EXCLUDE = list */
+    if (exclude_list) {
         x = cmdl_len;
         cmdl_len += 3;
         CHECK_BUFFER_ALLOCATION(the_cmd_line, cmdl_size, cmdl_len)
@@ -1467,39 +651,6 @@ vms_zip_cmdline (int *argc_p, char ***argv_p)
                           &the_cmd_line, &cmdl_size, &cmdl_len);
         if (!(status & 1)) return (status);
     }
-
-    /*
-    **  List file containing include patterns present? ("-x@exclude.lst")
-    */
-    status = cli$present(&cli_inlist);
-    if (status & 1) {
-        /* /INLIST = list */
-        status = cli$get_value(&cli_inlist, &work_str);
-        x = cmdl_len;
-        cmdl_len += work_str.dsc$w_length + 4;
-        CHECK_BUFFER_ALLOCATION(the_cmd_line, cmdl_size, cmdl_len)
-        strncpy(&the_cmd_line[x], "-i@", 3);
-        strncpy(&the_cmd_line[x+3], work_str.dsc$a_pointer,
-                work_str.dsc$w_length);
-        the_cmd_line[cmdl_len-1] = '\0';
-    }
-
-    /*
-    **  Any files to include? ("-i file file")
-    */
-    status = cli$present(&cli_include);
-    if (status & 1) {
-        /* /INCLUDE = list */
-        x = cmdl_len;
-        cmdl_len += 3;
-        CHECK_BUFFER_ALLOCATION(the_cmd_line, cmdl_size, cmdl_len)
-        strcpy(&the_cmd_line[x], "-i");
-
-        status = get_list(&cli_exclude, &foreign_cmdline, '\0',
-                          &the_cmd_line, &cmdl_size, &cmdl_len);
-        if (!(status & 1)) return (status);
-    }
-
 
     /*
     **  We have finished collecting the strings for the argv vector,
@@ -1538,15 +689,6 @@ vms_zip_cmdline (int *argc_p, char ***argv_p)
     for (x = 0; x < new_argc; x++)
         printf("new_argv[%d] = %s\n", x, new_argv[x]);
 #endif /* TEST || DEBUG */
-
-    /* Show the complete UNIX command line, if requested. */
-    if (verbose_command != 0)
-    {
-        printf( "   UNIX command line args (argc = %d):\n", new_argc);
-        for (x = 0; x < new_argc; x++)
-            printf( "%s\n", new_argv[ x]);
-        printf( "\n");
-    }
 
     /*
     **  All finished.  Return the new argc and argv[] addresses to Zip.
@@ -1650,76 +792,6 @@ get_list (struct dsc$descriptor_s *qual, struct dsc$descriptor_d *rawtail,
 
 
 static unsigned long
-get_time (struct dsc$descriptor_s *qual, char *timearg)
-{
-/*
-**  Routine:    get_time
-**
-**  Function:   This routine reads the argument string of the qualifier
-**              "qual" that should be a VMS syntax date-time string.  The
-**              date-time string is converted into the standard format
-**              "mmddyyyy", specifying an absolute date.  The converted
-**              string is written into the 9 bytes wide buffer "timearg".
-**
-**  Formal parameters:
-**
-**      qual    - Address of descriptor for the qualifier name
-**      timearg - Address of a buffer carrying the 8-char time string returned
-**
-*/
-
-    register unsigned long status;
-    struct dsc$descriptor_d time_str;
-    struct quadword {
-        long high;
-        long low;
-    } bintimbuf = {0,0};
-#ifdef __DECC
-#pragma member_alignment save
-#pragma nomember_alignment
-#endif  /* __DECC */
-    struct tim {
-        short year;
-        short month;
-        short day;
-        short hour;
-        short minute;
-        short second;
-        short hundred;
-    } numtimbuf;
-#ifdef __DECC
-#pragma member_alignment restore
-#endif
-
-    init_dyndesc(time_str);
-
-    status = cli$get_value(qual, &time_str);
-    /*
-    **  If a date is given, convert it to 64-bit binary.
-    */
-    if (time_str.dsc$w_length) {
-        status = sys$bintim(&time_str, &bintimbuf);
-        if (!(status & 1)) return (status);
-        str$free1_dx(&time_str);
-    }
-    /*
-    **  Now call $NUMTIM to get the month, day, and year.
-    */
-    status = sys$numtim(&numtimbuf, (bintimbuf.low ? &bintimbuf : NULL));
-    /*
-    **  Write the "mmddyyyy" string to the return buffer.
-    */
-    if (!(status & 1)) {
-        *timearg = '\0';
-    } else {
-        sprintf(timearg, "%02d%02d%04d", numtimbuf.month,
-                numtimbuf.day, numtimbuf.year);
-    }
-    return (status);
-}
-
-
-static unsigned long
 check_cli (struct dsc$descriptor_s *qual)
 {
 /*
@@ -1738,65 +810,162 @@ check_cli (struct dsc$descriptor_s *qual)
 
 
 #ifndef TEST
+#ifdef SFX
 
-void VMSCLI_help(void)  /* VMSCLI version */
-/* Print help (along with license info) to stdout. */
+#ifdef SFX_EXDIR
+#  define SFXOPT_EXDIR "\n                   and /DIRECTORY=exdir-spec"
+#else
+#  define SFXOPT_EXDIR ""
+#endif
+
+#ifdef MORE
+#  define SFXOPT1 "/PAGE, "
+#else
+#  define SFXOPT1 ""
+#endif
+
+int VMSCLI_usage(__GPRO__ int error)    /* returns PK-type error code */
 {
-  extent i;             /* counter for help array */
+    extern char UnzipSFXBanner[];
+#ifdef BETA
+    extern char BetaVersion[];
+#endif
+    int flag;
 
-  /* help array */
-  static char *text[] = {
-"Zip %s (%s). Usage: (zip :== $ dev:[dir]zip_cli.exe)",
-"zip archive[.zip] [list] [/EXCL=(xlist)] /options /modifiers",
-"  The default action is to add or replace archive entries from list, except",
-"  those in xlist. The include file list may contain the special name \"-\" to",
-"  compress standard input.  If both archive and list are omitted, Zip",
-"  compresses stdin to stdout.",
-"  Type zip -h for Unix-style flags.",
-"  Major options include:",
-"    /COPY, /DELETE, /DIFFERENCE, /FILESYNC, /FRESHEN, /GROW, /MOVE, /UPDATE,",
-"    /ADJUST_OFFSETS, /FIX_ARCHIVE[={NORMAL|FULL}], /TEST[=UNZIP=cmd], /UNSFX,",
-"  Modifiers include:",
-"    /BATCH[=list_file], /BEFORE=creation_time, /COMMENTS[={ARCHIVE|FILES}],",
-"    /EXCLUDE=(file_list), /EXLIST=file, /INCLUDE=(file_list), /INLIST=file,",
-"    /LATEST, /OUTPUT=out_archive, /SINCE=creation_time, /TEMP_PATH=directory,",
-"    /LOG_FILE=(FILE=log_file[,APPEND][,INFORMATIONAL]), /MUST_MATCH,",
-"    /PATTERN_CASE={BLIND|SENSITIVE}, /NORECURSE|/RECURSE[={PATH|FILENAMES}],",
-"    /STORE_TYPES=(type_list),",
-#if CRYPT
-"\
-    /QUIET, /VERBOSE[={MORE|DEBUG}], /[NO]DIRNAMES, /JUNK, /ENCRYPT[=\"pwd\"],\
-",
-#else /* !CRYPT */
-"    /QUIET, /VERBOSE[={MORE|DEBUG}], /[NO]DIRNAMES, /JUNK,",
-#endif /* ?CRYPT */
-"    /COMPRESSION = {BZIP2|DEFLATE|STORE}, /LEVEL=[0-9], /NOVMS|/VMS[=ALL],",
-"    /STORE_TYPES=(type_list), /[NO]PRESERVE_CASE[=([NO]ODS{2|5}[,...])],", 
-"    /[NO]PKZIP, /[NO]KEEP_VERSION, /DOT_VERSION, /TRANSLATE_EOL[={LF|CRLF}],",
-"    /DISPLAY=([BYTES][,COUNTS][,DOTS=mb_per_dot][,GLOBALDOTS][,USIZE]",
-"    [,VOLUME]), /DESCRIPTORS, /[NO]EXTRA_FIELDS, /ZIP64,",
-#ifdef S_IFLNK
-"    /SPLIT = (SIZE=ssize [,BELL] [,PAUSE] [,VERBOSE]), /SYMLINKS"
-#else /* S_IFLNK */
-"    /SPLIT = (SIZE=ssize [,BELL] [,PAUSE] [,VERBOSE])"
-#endif /* S_IFLNK [else] */
-  };
+    if (!show_VMSCLI_usage)
+       return usage(__G__ error);
 
-  if (!show_VMSCLI_help) {
-     help();
-     return;
-  }
+    flag = (error? 1 : 0);
 
-  for (i = 0; i < sizeof(copyright)/sizeof(char *); i++)
-  {
-    printf(copyright[i], "zip");
-    putchar('\n');
-  }
-  for (i = 0; i < sizeof(text)/sizeof(char *); i++)
-  {
-    printf(text[i], VERSION, REVDATE);
-    putchar('\n');
-  }
-} /* end function VMSCLI_help() */
+    Info(slide, flag, ((char *)slide, UnzipSFXBanner,
+      UZ_MAJORVER, UZ_MINORVER, UZ_PATCHLEVEL, UZ_BETALEVEL, UZ_VERSION_DATE));
+    Info(slide, flag, ((char *)slide, "\
+Valid main options are /TEST, /FRESHEN, /UPDATE, /PIPE, /SCREEN, /COMMENT%s.\n",
+      SFXOPT_EXDIR));
+    Info(slide, flag, ((char *)slide, "\
+Modifying options are /TEXT, /BINARY, /JUNK, /[NO]OVERWRITE, /QUIET,\n\
+                      /CASE_INSENSITIVE, /LOWERCASE, %s/VERSION, /RESTORE.\n",
+      SFXOPT1));
+#ifdef BETA
+    Info(slide, flag, ((char *)slide, BetaVersion, "\n", "SFX"));
+#endif
 
+    if (error)
+        return PK_PARAM;
+    else
+        return PK_COOL;     /* just wanted usage screen: no error */
+
+} /* end function VMSCLI_usage() */
+
+
+#else /* !SFX */
+
+int VMSCLI_usage(__GPRO__ int error)    /* returns PK-type error code */
+{
+    extern char UnzipUsageLine1[];
+#ifdef BETA
+    extern char BetaVersion[];
+#endif
+    int flag;
+
+    if (!show_VMSCLI_usage)
+       return usage(__G__ error);
+
+/*---------------------------------------------------------------------------
+    If user requested usage, send it to stdout; else send to stderr.
+  ---------------------------------------------------------------------------*/
+
+    flag = (error? 1 : 0);
+
+
+/*---------------------------------------------------------------------------
+    Print either ZipInfo usage or UnZip usage, depending on incantation.
+  ---------------------------------------------------------------------------*/
+
+    if (uO.zipinfo_mode) {
+
+#ifndef NO_ZIPINFO
+
+        Info(slide, flag, ((char *)slide, "\
+ZipInfo %d.%d%d%s %s, by Newtware and the fine folks at Info-ZIP.\n\n\
+List name, date/time, attribute, size, compression method, etc., about files\n\
+in list (excluding those in xlist) contained in the specified .zip archive(s).\
+\n\"file[.zip]\" may be a wildcard name containing * or %% (e.g., \"*font-%%\
+.zip\").\n", ZI_MAJORVER, ZI_MINORVER, UZ_PATCHLEVEL, UZ_BETALEVEL,
+          UZ_VERSION_DATE));
+
+        Info(slide, flag, ((char *)slide, "\
+   usage:  zipinfo file[.zip] [list] [/EXCL=(xlist)] [/DIR=exdir] /options\n\
+   or:  unzip /ZIPINFO file[.zip] [list] [/EXCL=(xlist)] [/DIR=exdir] /options\
+\n\nmain\
+ listing-format options:              /SHORT   short \"ls -l\" format (def.)\n\
+  /ONE_LINE  just filenames, one/line     /MEDIUM  medium Unix \"ls -l\" format\n\
+  /VERBOSE   verbose, multi-page format   /LONG    long Unix \"ls -l\" format\n\
+"));
+
+        Info(slide, flag, ((char *)slide, "\
+miscellaneous options:\n  \
+/HEADER   print header line       /TOTALS  totals for listed files or for all\n\
+  /COMMENT  print zipfile comment   /TIMES   times in sortable decimal format\n\
+  /[NO]CASE_INSENSITIVE  match filenames case-insensitively\n\
+  /[NO]PAGE page output through built-in \"more\"\n\
+  /EXCLUDE=(file-spec1,etc.)  exclude file-specs from listing\n"));
+
+        Info(slide, flag, ((char *)slide, "\n\
+Type unzip \"-Z\" for Unix style flags\n\
+Remember that non-lowercase filespecs must be\
+ quoted in VMS (e.g., \"Makefile\").\n"));
+
+#endif /* !NO_ZIPINFO */
+
+    } else {   /* UnZip mode */
+
+        Info(slide, flag, ((char *)slide, UnzipUsageLine1,
+          UZ_MAJORVER, UZ_MINORVER, UZ_PATCHLEVEL, UZ_BETALEVEL,
+          UZ_VERSION_DATE));
+
+#ifdef BETA
+        Info(slide, flag, ((char *)slide, BetaVersion, "", ""));
+#endif
+
+        Info(slide, flag, ((char *)slide, "\
+Usage: unzip file[.zip] [list] [/EXCL=(xlist)] [/DIR=exdir] /options /modifiers\
+\n  Default action is to extract files in list, except those in xlist, to exdir\
+;\n  file[.zip] may be a wildcard.  %s\n\n",
+#ifdef NO_ZIPINFO
+          "(ZipInfo mode is disabled in this version.)"
+#else
+          "Type \"unzip /ZIPINFO\" for ZipInfo-mode usage."
+#endif
+          ));
+
+        Info(slide, flag, ((char *)slide, "\
+Major options include (type unzip -h for Unix style flags):\n\
+   /[NO]TEST, /LIST, /[NO]SCREEN, /PIPE, /[NO]FRESHEN, /[NO]UPDATE,\n\
+   /[NO]COMMENT, /DIRECTORY=directory-spec, /EXCLUDE=(file-spec1,etc.)\n\n\
+Modifiers include:\n\
+   /BRIEF, /FULL, /[NO]TEXT[=NONE|AUTO|ALL], /[NO]BINARY[=NONE|AUTO|ALL],\n\
+   /[NO]OVERWRITE, /[NO]JUNK, /QUIET, /QUIET[=SUPER], /[NO]PAGE,\n\
+   /[NO]CASE_INSENSITIVE, /[NO]LOWERCASE, /[NO]VERSION, /[NO]RESTORE\n\n"));
+
+        Info(slide, flag, ((char *)slide, "\
+Examples (see unzip.txt or \"HELP UNZIP\" for more info):\n   \
+unzip edit1 /EXCL=joe.jou /CASE_INSENSITIVE    => extract all files except\n   \
+   joe.jou (or JOE.JOU, or any combination of case) from zipfile edit1.zip\n   \
+unzip zip201 \"Makefile.VMS\" vms/*.[ch]         => extract VMS Makefile and\n\
+      *.c and *.h files; must quote uppercase names if /CASE_INSENS not used\n\
+   unzip foo /DIR=tmp:[.test] /JUNK /TEXT /OVER   => extract all files to temp.\
+\n      directory without paths, auto-converting text files and overwriting\
+\n"));
+
+    } /* end if (zipinfo_mode) */
+
+    if (error)
+        return PK_PARAM;
+    else
+        return PK_COOL;     /* just wanted usage screen: no error */
+
+} /* end function VMSCLI_usage() */
+
+#endif /* ?SFX */
 #endif /* !TEST */

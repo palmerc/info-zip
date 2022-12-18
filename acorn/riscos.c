@@ -2,7 +2,7 @@
   Copyright (c) 1990-2002 Info-ZIP.  All rights reserved.
 
   See the accompanying file LICENSE, version 2000-Apr-09 or later
-  (the contents of which are also included in zip.h) for terms of use.
+  (the contents of which are also included in unzip.h) for terms of use.
   If, for some reason, all these files are missing, the Info-ZIP license
   also may be found at:  ftp://ftp.info-zip.org/pub/infozip/license.html
 */
@@ -11,15 +11,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "zip.h"
+
+/* #define NO_UNZIPH_STUFF */
+#define UNZIP_INTERNAL
+#include "unzip.h"
 #include "riscos.h"
 
-#define MAXEXT 256
+#define MAXEXT 16
 
-/* External globals */
-extern int scanimage;
-
-/* Local globals (!?!?) */
 char *exts2swap = NULL; /* Extensions to swap (actually, directory names) */
 
 int stat(char *filename,struct stat *res)
@@ -57,7 +56,7 @@ int stat(char *filename,struct stat *res)
     res->st_mode |= S_IFDIR | 0700;
     break;
    case 3:                        /* Image file */
-    if (scanimage)
+    if (uO.scanimage)
       res->st_mode |= S_IFDIR | 0700;
     else
       res->st_mode |= S_IFREG;
@@ -65,7 +64,7 @@ int stat(char *filename,struct stat *res)
  }
 
  if ((((unsigned int) load) >> 20) == 0xfff) {     /* date stamped file */
-   unsigned int t1, t2, tc;
+   register unsigned int t1, t2, tc;
 
    t1 = (unsigned int) (exec);
    t2 = (unsigned int) (load & 0xff);
@@ -111,7 +110,7 @@ DIR *opendir(char *dirname)
    thisdir->dirname[strlen(thisdir->dirname)-1]=0;
 
  if (er=SWI_OS_File_5(thisdir->dirname,&type,NULL,NULL,NULL,&attr),er!=NULL ||
-     type<=1 || (type==3 && !scanimage))
+     type<=1 || (type==3 && !uO.scanimage))
  {
    free(thisdir->dirname);
    free(thisdir);
@@ -160,6 +159,11 @@ struct dirent *readdir(DIR *d)
  strcpy(dent.d_name,d->act);
  dent.d_namlen=strlen(dent.d_name);
 
+ /* If we're returning the last item, check if there are any more.
+  * If there are, nothing will happen; if not, then d->offset = -1 */
+ if (!d->read)
+   SWI_OS_GBPB_9(d->dirname,d->buf,&d->read,&d->offset,0,NULL);
+
  return &dent;
 }
 
@@ -190,12 +194,11 @@ char *f;                /* file to delete */
  return (int)er;
 }
 
-int deletedir(char *d)
+int rmdir(char *d)
 {
  int objtype;
  char *s;
  int len;
- os_error *er;
 
  len = strlen(d);
  if ((s = malloc(len + 1)) == NULL)
@@ -205,29 +208,18 @@ int deletedir(char *d)
  if (s[len-1]=='.')
    s[len-1]=0;
 
- if (er=SWI_OS_File_5(s,&objtype,NULL,NULL,NULL,NULL),er!=NULL) {
+ if (SWI_OS_File_5(s,&objtype,NULL,NULL,NULL,NULL)!=NULL) {
    free(s);
    return -1;
  }
- if (objtype<2 || (!scanimage && objtype==3)) {
-   /* this is a file or it doesn't exist */
+ if (objtype<2 || (!uO.scanimage && objtype==3)) {
+/* this is a file or it doesn't exist */
    free(s);
    return -1;
  }
-
- if (er=SWI_OS_File_6(s),er!=NULL) {
-   /* maybe this is a problem with the DDEUtils module, try to canonicalise the path */
-   char canon[256];
-   int size=255;
-
-   if (er=SWI_OS_FSControl_37(s,canon,&size),er!=NULL) {
-     free(s);
-     return -1;
-   }
-   if (er=SWI_OS_File_6(canon),er!=NULL) {
-     free(s);
-     return -1;
-   }
+ if (SWI_OS_File_6(s)!=NULL) {
+   free(s);
+   return -1;
  }
  free(s);
  return 0;
@@ -267,11 +259,11 @@ void getRISCOSexts(char *envstr)
 
 int checkext(char *suff)
 {
- register char *extptr=exts2swap;
+ register char *extptr = exts2swap ? exts2swap : "";
  register char *suffptr;
  register int e,s;
 
- if (extptr != NULL) while(*extptr) {
+ while(*extptr) {
    suffptr=suff;
    e=*extptr; s=*suffptr;
    while (e && e!=':' && s && s!='.' && s!='/' && e==s) {
@@ -290,28 +282,25 @@ int checkext(char *suff)
  return 0;
 }
 
-int swapext(char *name, char *exptr)
+void swapext(char *name, char *exptr)
 {
- char *ext;
- char *p1=exptr;
- char *p2;
+ char ext[MAXEXT];
+ register char *p1=exptr+1;
+ register char *p2=ext;
  int extchar=*exptr;
- unsigned int i=0;
 
- while(*++p1 && *p1!='.' && *p1!='/')
-   ;
- ext=malloc(i=p1-exptr);
- if (!ext)
-   return 1;
- memcpy(ext, exptr+1, i);
+ while(*p1 && *p1!='.' && *p1!='/')
+   *p2++=*p1++;
+ *p2=0;
  p2=exptr-1;
- p1=exptr+i-1;
+ p1--;
  while(p2 >= name)
    *p1--=*p2--;
- strcpy(name,ext);
+ p1=name;
+ p2=ext;
+ while(*p2)
+   *p1++=*p2++;
  *p1=(extchar=='/'?'.':'/');
- free(ext);
- return 0;
 }
 
 void remove_prefix(void)
@@ -330,16 +319,16 @@ void set_prefix(void)
  size=1-size;
 
  if (pref=malloc(size),pref!=NULL) {
-   if (SWI_OS_FSControl_37("@",pref,&size)!=NULL) {
-     free(pref);
-     return;
-   }
-
-   if (SWI_DDEUtils_Prefix(pref)==NULL) {
-     atexit(remove_prefix);
-   }
-
+ if (SWI_OS_FSControl_37("@",pref,&size)!=NULL) {
    free(pref);
+   return;
+ }
+
+ if (SWI_DDEUtils_Prefix(pref)==NULL) {
+   atexit(remove_prefix);
+ }
+
+ free(pref);
  }
 }
 
@@ -372,23 +361,4 @@ struct tm *riscos_gmtime(const time_t *timer)
  localt+=SWI_Read_Timezone()/100;
 
  return gmtime(&localt);
-}
-
-
-int riscos_fseek(FILE *fd, long offset, int whence)
-{
-  int ret;
-  switch (whence)
-  {
-    case SEEK_END:
-      ret = (fseek) (fd, 0, SEEK_END);
-      if (ret)
-        return ret;
-      /* fall through */
-    case SEEK_CUR:
-      offset += ftell (fd);
-      /* fall through */
-    default: /* SEEK_SET */
-      return (fseek) (fd, offset < 0 ? 0 : offset, SEEK_SET);
-  }
 }

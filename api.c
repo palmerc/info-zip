@@ -1,10 +1,8 @@
 /*
-  api.c - Zip 3
+  Copyright (c) 1990-2004 Info-ZIP.  All rights reserved.
 
-  Copyright (c) 1990-2007 Info-ZIP.  All rights reserved.
-
-  See the accompanying file LICENSE, version 2007-Mar-4 or later
-  (the contents of which are also included in zip.h) for terms of use.
+  See the accompanying file LICENSE, version 2000-Apr-09 or later
+  (the contents of which are also included in unzip.h) for terms of use.
   If, for some reason, all these files are missing, the Info-ZIP license
   also may be found at:  ftp://ftp.info-zip.org/pub/infozip/license.html
 */
@@ -12,707 +10,634 @@
 
   api.c
 
-  This module supplies a Zip dll engine for use directly from C/C++
-  programs.
+  This module supplies an UnZip engine for use directly from C/C++
+  programs.  The functions are:
 
-  The entry points are:
+    UzpVer *UzpVersion(void);
+    void UzpVersion2(UzpVer2 *version)
+    int UzpMain(int argc, char *argv[]);
+    int UzpAltMain(int argc, char *argv[], UzpInit *init);
+    int UzpValidate(char *archive, int AllCodes);
+    void UzpFreeMemBuffer(UzpBuffer *retstr);
+    int UzpUnzipToMemory(char *zip, char *file, UzpOpts *optflgs,
+                         UzpCB *UsrFuncts, UzpBuffer *retstr);
 
-    ZpVer *ZpVersion(void);
-    int EXPENTRY ZpInit(LPZIPUSERFUNCTIONS lpZipUserFunc);
-    int EXPENTRY ZpArchive(ZCL C, LPZPOPT Opts);
+  non-WINDLL only (a special WINDLL variant is defined in windll/windll.c):
+    int UzpGrep(char *archive, char *file, char *pattern, int cmd, int SkipBin,
+                UzpCB *UsrFuncts);
 
-  This module is currently only used by the Windows dll, and is not used at
-  all by any of the other platforms, although it should be easy enough to
-  implement this on most platforms.
+  OS/2 only (for now):
+    int UzpFileTree(char *name, cbList(callBack), char *cpInclude[],
+          char *cpExclude[]);
+
+  You must define `DLL' in order to include the API extensions.
 
   ---------------------------------------------------------------------------*/
-#define __API_C
 
-#include <malloc.h>
-#ifdef WINDLL
-#  include <windows.h>
-#  include "windll/windll.h"
-#endif
 
 #ifdef OS2
 #  define  INCL_DOSMEMMGR
 #  include <os2.h>
 #endif
+#include <setjmp.h>
 
-#ifdef __BORLANDC__
-#include <dir.h>
+#define UNZIP_INTERNAL
+#include "unzip.h"
+#ifdef WINDLL
+#  ifdef POCKET_UNZIP
+#    include "wince/intrface.h"
+#  else
+#    include "windll/windll.h"
+#  endif
 #endif
-#include <direct.h>
-#include <ctype.h>
-#include "api.h"                /* this includes zip.h */
-#include "crypt.h"
-#include "revision.h"
-#ifdef USE_ZLIB
-#  include "zlib.h"
+#include "unzvers.h"
+
+#ifdef DLL      /* This source file supplies DLL-only interface code. */
+
+#ifndef POCKET_UNZIP    /* WinCE pUnZip defines this elsewhere. */
+jmp_buf dll_error_return;
 #endif
-
-
-DLLPRNT *lpZipPrint;
-DLLPASSWORD *lpZipPassword;
-extern DLLCOMMENT *lpComment;
-ZIPUSERFUNCTIONS ZipUserFunctions, far * lpZipUserFunctions;
-
-int ZipRet;
-char szOrigDir[PATH_MAX];
-BOOL fNo_int64 = FALSE; /* flag for DLLSERVICE_NO_INT64 */
-
-/* Local forward declarations */
-extern int  zipmain OF((int, char **));
-int AllocMemory(unsigned int, char *, char *, BOOL);
-int ParseString(LPSTR, unsigned int);
-void FreeArgVee(void);
-
-ZPOPT Options;
-char **argVee;
-unsigned int argCee;
-
-/*---------------------------------------------------------------------------
-    Local functions
-  ---------------------------------------------------------------------------*/
-
-char szRootDir[PATH_MAX], szExcludeList[PATH_MAX], szIncludeList[PATH_MAX], szTempDir[PATH_MAX];
-
-int ParseString(LPSTR s, unsigned int ArgC)
-{
-unsigned int i;
-int root_flag, m, j;
-char *str1, *str2, *str3;
-size_t size;
-
-i = ArgC;
-str1 = (char *) malloc(lstrlen(s)+4);
-lstrcpy(str1, s);
-lstrcat(str1, " @");
-
-if ((szRootDir != NULL) && (szRootDir[0] != '\0'))
-    {
-    root_flag = TRUE;
-    if (szRootDir[lstrlen(szRootDir)-1] != '\\')
-        lstrcat(szRootDir, "\\");
-    }
-else
-    root_flag = FALSE;
-
-str2 = strchr(str1, '\"'); /* get first occurance of double quote */
-
-while ((str3 = strchr(str1, '\t')) != NULL)
-    {
-    str3[0] = ' '; /* Change tabs into a single space */
-    }
-
-/* Note that if a quoted string contains multiple adjacent spaces, they
-   will not be removed, because they could well point to a valid
-   folder/file name.
-*/
-while ((str2 = strchr(str1, '\"')) != NULL)
-    /* Found a double quote if not NULL */
-    {
-    str3 = strchr(str2+1, '\"'); /* Get the second quote */
-    if (str3 == NULL)
-        {
-        free(str1);
-        return ZE_PARMS; /* Something is screwy with the
-                            string, bail out */
-        }
-    str3[0] = '\0';  /* terminate str2 with a NULL */
-
-    /* strip unwanted fully qualified path from entry */
-    if (root_flag)
-        if ((_strnicmp(szRootDir, str2+1, lstrlen(szRootDir))) == 0)
-            {
-            m = 0;
-            str2++;
-            for (j = lstrlen(szRootDir); j < lstrlen(str2); j++)
-                str2[m++] = str2[j];
-            str2[m] = '\0';
-            str2--;
-            }
-    size = _msize(argVee);
-    if ((argVee = (char **)realloc(argVee, size + sizeof(char *))) == NULL)
-        {
-        fprintf(stdout, "Unable to allocate memory in zip dll\n");
-        return ZE_MEM;
-        }
-    /* argCee is incremented in AllocMemory */
-    if (AllocMemory(i, str2+1, "Creating file list from string", TRUE) != ZE_OK)
-        {
-        free(str1);
-        return ZE_MEM;
-        }
-    i++;
-    str3+=2;        /* Point past the whitespace character */
-    str2[0] = '\0'; /* Terminate str1 */
-    lstrcat(str1, str3);
-    }    /* end while */
-
-/* points to first occurance of a space */
-str2 = strchr(str1, ' ');
-
-/*  Go through the string character by character, looking for instances
-    of two spaces together. Terminate when you find the trailing @
-*/
-while ((str2[0] != '\0') && (str2[0] != '@'))
-    {
-    while ((str2[0] == ' ') && (str2[1] == ' '))
-        {
-        str3 = &str2[1];
-        str2[0] = '\0';
-        lstrcat(str1, str3);
-        }
-    str2++;
-    }
-
-/* Do we still have a leading space? */
-if (str1[0] == ' ')
-    {
-    str3 = &str1[1];
-    lstrcpy(str1, str3); /* Dump the leading space */
-    }
-
-
-/* Okay, now we have gotten rid of any tabs and replaced them with
-   spaces, and have replaced multiple spaces with a single space. We
-   couldn't do this before because the folder names could have actually
-   contained these characters.
-*/
-
-str2 = str3 = str1;
-
-while ((str2[0] != '\0') && (str3[0] != '@'))
-    {
-    str3 = strchr(str2+1, ' ');
-    str3[0] = '\0';
-    /* strip unwanted fully qualified path from entry */
-    if (root_flag)
-        if ((_strnicmp(szRootDir, str2, lstrlen(szRootDir))) == 0)
-           {
-            m = 0;
-            for (j = lstrlen(Options.szRootDir); j < lstrlen(str2); j++)
-            str2[m++] = str2[j];
-            str2[m] = '\0';
-            }
-    size = _msize(argVee);
-    if ((argVee = (char **)realloc(argVee, size + sizeof(char *))) == NULL)
-        {
-        fprintf(stdout, "Unable to allocate memory in zip dll\n");
-        return ZE_MEM;
-        }
-    if (AllocMemory(i, str2, "Creating file list from string", TRUE) != ZE_OK)
-        {
-        free(str1);
-        return ZE_MEM;
-        }
-    i++;
-    str3++;
-    str2 = str3;
-    }
-free(str1);
-return ZE_OK;
-}
-
-int AllocMemory(unsigned int i, char *cmd, char *str, BOOL IncrementArgCee)
-{
-if ((argVee[i] = (char *) malloc( sizeof(char) * strlen(cmd)+1 )) == NULL)
-   {
-   if (IncrementArgCee)
-       argCee++;
-   FreeArgVee();
-   fprintf(stdout, "Unable to allocate memory in zip library at %s\n", str);
-   return ZE_MEM;
-   }
-strcpy( argVee[i], cmd );
-argCee++;
-return ZE_OK;
-}
-
-void FreeArgVee(void)
-{
-unsigned i;
-
-/* Free the arguments in the array */
-for (i = 0; i < argCee; i++)
-    {
-    free (argVee[i]);
-    argVee[i] = NULL;
-    }
-/* Then free the array itself */
-free(argVee);
-
-/* Restore the original working directory */
-chdir(szOrigDir);
-#ifdef __BORLANDC__
-setdisk(toupper(szOrigDir[0]) - 'A');
-#endif
-
-}
-
 
 /*---------------------------------------------------------------------------
     Documented API entry points
   ---------------------------------------------------------------------------*/
 
-int EXPENTRY ZpInit(LPZIPUSERFUNCTIONS lpZipUserFunc)
+
+UzpVer * UZ_EXP UzpVersion()   /* should be pointer to const struct */
 {
-ZipUserFunctions = *lpZipUserFunc;
-lpZipUserFunctions = &ZipUserFunctions;
-
-if (!lpZipUserFunctions->print ||
-    !lpZipUserFunctions->comment)
-    return FALSE;
-
-return TRUE;
-}
-
-int EXPENTRY ZpArchive(ZCL C, LPZPOPT Opts)
-/* Add, update, freshen, or delete zip entries in a zip file.  See the
-   command help in help() zip.c */
-{
-int k, j, m;
-size_t size;
-
-Options = *Opts; /* Save off options, and make them available locally */
-szRootDir[0] = '\0';
-szExcludeList[0] = '\0';
-szIncludeList[0] = '\0';
-szTempDir[0] = '\0';
-if (Options.szRootDir) lstrcpy(szRootDir, Options.szRootDir);
-if (Options.szExcludeList) lstrcpy(szExcludeList, Options.szExcludeList);
-if (Options.szIncludeList) lstrcpy(szIncludeList, Options.szIncludeList);
-if (Options.szTempDir) lstrcpy(szTempDir, Options.szTempDir);
-
-getcwd(szOrigDir, PATH_MAX); /* Save current drive and directory */
-
-if ((szRootDir != NULL) && (szRootDir[0] != '\0'))
-   {
-   /* Make sure there isn't a trailing slash */
-   if (szRootDir[lstrlen(szRootDir)-1] == '\\')
-       szRootDir[lstrlen(szRootDir)-1] = '\0';
-
-   chdir(szRootDir);
-#ifdef __BORLANDC__
-   setdisk(toupper(szRootDir[0]) - 'A');
-#endif
-   }
-
-argCee = 0;
-
-/* malloc additional 40 to allow for additional command line arguments. Note
-   that we are also adding in the count for the include lists as well as the
-   exclude list. */
-if ((argVee = (char **)malloc((C.argc+40)*sizeof(char *))) == NULL)
-   {
-   fprintf(stdout, "Unable to allocate memory in zip dll\n");
-   return ZE_MEM;
-   }
-if ((argVee[argCee] = (char *) malloc( sizeof(char) * strlen("wiz.exe")+1 )) == NULL)
-   {
-   free(argVee);
-   fprintf(stdout, "Unable to allocate memory in zip dll\n");
-   return ZE_MEM;
-   }
-strcpy( argVee[argCee], "wiz.exe" );
-argCee++;
+    static UzpVer version;     /* doesn't change between calls */
 
 
-/* Set compression level efficacy -0...-9 */
-if (AllocMemory(argCee, "-0", "Compression", FALSE) != ZE_OK)
-    return ZE_MEM;
-
-/* Check to see if the compression level is set to a valid value. If
- not, then set it to the default.
-*/
-if ((Options.fLevel < '0') || (Options.fLevel > '9'))
-    {
-    Options.fLevel = '6';
-    if (!Options.fDeleteEntries)
-        fprintf(stdout, "Compression level set to invalid value. Setting to default\n");
-    }
-
-argVee[argCee-1][1] = Options.fLevel;
-
-if (Options.fOffsets)    /* Update offsets for SFX prefix */
-   {
-   if (AllocMemory(argCee, "-A", "Offsets", FALSE) != ZE_OK)
-        return ZE_MEM;
-    }
-if (Options.fDeleteEntries)    /* Delete files from zip file -d */
-   {
-   if (AllocMemory(argCee, "-d", "Delete", FALSE) != ZE_OK)
-        return ZE_MEM;
-   }
-if (Options.fNoDirEntries) /* Do not add directory entries -D */
-   {
-        if (AllocMemory(argCee, "-D", "No Dir Entries", FALSE) != ZE_OK)
-            return ZE_MEM;
-   }
-if (Options.fFreshen) /* Freshen zip file--overwrite only -f */
-   {
-   if (AllocMemory(argCee, "-f", "Freshen", FALSE) != ZE_OK)
-        return ZE_MEM;
-   }
-if (Options.fRepair)  /* Fix archive -F or -FF */
-   {
-   if (Options.fRepair == 1)
-      {
-      if (AllocMemory(argCee, "-F", "Repair", FALSE) != ZE_OK)
-          return ZE_MEM;
-      }
-   else
-      {
-      if (AllocMemory(argCee, "-FF", "Repair", FALSE) != ZE_OK)
-        return ZE_MEM;
-      }
-   }
-if (Options.fGrow) /* Allow appending to a zip file -g */
-   {
-   if (AllocMemory(argCee, "-g", "Appending", FALSE) != ZE_OK)
-        return ZE_MEM;
-   }
-if (Options.fJunkDir) /* Junk directory names -j */
-   {
-   if (AllocMemory(argCee, "-j", "Junk Dir Names", FALSE) != ZE_OK)
-        return ZE_MEM;
-   }
-if (Options.fEncrypt) /* encrypt -e */
-   {
-   if (AllocMemory(argCee, "-e", "Encrypt", FALSE) != ZE_OK)
-        return ZE_MEM;
-   }
-if (Options.fJunkSFX) /* Junk sfx prefix */
-   {
-   if (AllocMemory(argCee, "-J", "Junk SFX", FALSE) != ZE_OK)
-        return ZE_MEM;
-   }
-
-if (Options.fForce) /* Make entries using DOS names (k for Katz) -k */
-   {
-   if (AllocMemory(argCee, "-k", "Force DOS", FALSE) != ZE_OK)
-        return ZE_MEM;
-   }
-
-if (Options.fLF_CRLF) /* Translate LF_CRLF -l */
-   {
-   if (AllocMemory(argCee, "-l", "LF-CRLF", FALSE) != ZE_OK)
-        return ZE_MEM;
-   }
-if (Options.fCRLF_LF) /* Translate CR/LF to LF -ll */
-   {
-   if (AllocMemory(argCee, "-ll", "CRLF-LF", FALSE) != ZE_OK)
-        return ZE_MEM;
-   }
-if (Options.fMove) /* Delete files added to or updated in zip file -m */
-   {
-   if (AllocMemory(argCee, "-m", "Move", FALSE) != ZE_OK)
-        return ZE_MEM;
-   }
-
-if (Options.fLatestTime) /* Set zip file time to time of latest file in it -o */
-   {
-   if (AllocMemory(argCee, "-o", "Time", FALSE) != ZE_OK)
-        return ZE_MEM;
-   }
-
-if (Options.fComment) /* Add archive comment "-z" */
-   {
-   if (AllocMemory(argCee, "-z", "Comment", FALSE) != ZE_OK)
-        return ZE_MEM;
-   }
-
-if (Options.fQuiet) /* quiet operation -q */
-   {
-   if (AllocMemory(argCee, "-q", "Quiet", FALSE) != ZE_OK)
-        return ZE_MEM;
-   }
-if (Options.fRecurse == 1) /* recurse into subdirectories -r */
-   {
-   if (AllocMemory(argCee, "-r", "Recurse -r", FALSE) != ZE_OK)
-        return ZE_MEM;
-   }
-else if (Options.fRecurse == 2) /* recurse into subdirectories -R */
-   {
-   if (AllocMemory(argCee, "-R", "Recurse -R", FALSE) != ZE_OK)
-        return ZE_MEM;
-   }
-if (Options.fSystem)  /* include system and hidden files -S */
-   {
-   if (AllocMemory(argCee, "-S", "System", FALSE) != ZE_OK)
-        return ZE_MEM;
-   }
-if (Options.fExcludeDate)    /* Exclude files newer than specified date -tt */
-   {
-     if ((Options.Date != NULL) && (Options.Date[0] != '\0'))
-        {
-        if (AllocMemory(argCee, "-tt", "Date", FALSE) != ZE_OK)
-            return ZE_MEM;
-        if (AllocMemory(argCee, Options.Date, "Date", FALSE) != ZE_OK)
-            return ZE_MEM;
-        }
-   }
-
-if (Options.fIncludeDate)    /* include files newer than specified date -t */
-   {
-     if ((Options.Date != NULL) && (Options.Date[0] != '\0'))
-        {
-        if (AllocMemory(argCee, "-t", "Date", FALSE) != ZE_OK)
-            return ZE_MEM;
-       if (AllocMemory(argCee, Options.Date, "Date", FALSE) != ZE_OK)
-            return ZE_MEM;
-        }
-   }
-
-if (Options.fUpdate) /* Update zip file--overwrite only if newer -u */
-    {
-    if (AllocMemory(argCee, "-u", "Update", FALSE) != ZE_OK)
-        return ZE_MEM;
-    }
-if (Options.fVerbose)  /* Mention oddities in zip file structure -v */
-    {
-    if (AllocMemory(argCee, "-v", "Verbose", FALSE) != ZE_OK)
-        return ZE_MEM;
-    }
-if (Options.fVolume)  /* Include volume label -$ */
-    {
-    if (AllocMemory(argCee, "-$", "Volume", FALSE) != ZE_OK)
-        return ZE_MEM;
-    }
-if (Options.szSplitSize != NULL)   /* Turn on archive splitting */
-    {
-    if (AllocMemory(argCee, "-s", "Splitting", FALSE) != ZE_OK)
-        return ZE_MEM;
-    if (AllocMemory(argCee, Options.szSplitSize, "Split size", FALSE) != ZE_OK)
-        return ZE_MEM;
-    }
-if (lpZipUserFunctions->split != NULL)   /* Turn on archive split destinations select */
-    {
-    if (AllocMemory(argCee, "-sp", "Split Pause Select Destination", FALSE) != ZE_OK)
-        return ZE_MEM;
-    }
-#ifdef WIN32
-if (Options.fPrivilege)  /* Use privileges -! */
-   {
-   if (AllocMemory(argCee, "-!", "Privileges", FALSE) != ZE_OK)
-        return ZE_MEM;
-   }
-#endif
-if (Options.fExtra)  /* Exclude extra attributes -X */
-    {
-    if (AllocMemory(argCee, "-X", "Extra", FALSE) != ZE_OK)
-        return ZE_MEM;
-    }
-if (Options.IncludeList != NULL) /* Include file list -i */
-    {
-    if (AllocMemory(argCee, "-i", "Include file list", FALSE) != ZE_OK)
-        return ZE_MEM;
-    k = 0;
-    if (Options.IncludeListCount > 0)
-        while ((Options.IncludeList[k] != NULL) && (Options.IncludeListCount != k+1))
-            {
-            size = _msize(argVee);
-            if ((argVee = (char **)realloc(argVee, size + sizeof(char *))) == NULL)
-                {
-                fprintf(stdout, "Unable to allocate memory in zip dll\n");
-                return ZE_MEM;
-                }
-            if (AllocMemory(argCee, Options.IncludeList[k], "Include file list array", TRUE) != ZE_OK)
-                {
-                return ZE_MEM;
-                }
-            k++;
-            }
-    else
-        while (Options.IncludeList[k] != NULL)
-            {
-            size = _msize(argVee);
-            if ((argVee = (char **)realloc(argVee, size + sizeof(char *))) == NULL)
-                {
-                FreeArgVee();
-                fprintf(stdout, "Unable to allocate memory in zip dll\n");
-                return ZE_MEM;
-                }
-            if (AllocMemory(argCee, Options.IncludeList[k], "Include file list array", TRUE) != ZE_OK)
-                return ZE_MEM;
-            k++;
-            }
-
-    if (AllocMemory(argCee, "@", "End of Include List", FALSE) != ZE_OK)
-        return ZE_MEM;
-    }
-if (Options.ExcludeList != NULL)  /* Exclude file list -x */
-    {
-    if (AllocMemory(argCee, "-x", "Exclude file list", FALSE) != ZE_OK)
-        return ZE_MEM;
-    k = 0;
-    if (Options.ExcludeListCount > 0)
-        while ((Options.ExcludeList[k] != NULL) && (Options.ExcludeListCount != k+1))
-            {
-            size = _msize(argVee);
-            if ((argVee = (char **)realloc(argVee, size + sizeof(char *))) == NULL)
-                {
-                fprintf(stdout, "Unable to allocate memory in zip dll\n");
-                return ZE_MEM;
-                }
-            if (AllocMemory(argCee, Options.ExcludeList[k], "Exclude file list array", TRUE) != ZE_OK)
-                return ZE_MEM;
-            k++;
-            }
-    else
-        while (Options.ExcludeList[k] != NULL)
-            {
-            size = _msize(argVee);
-            if ((argVee = (char **)realloc(argVee, size + sizeof(char *))) == NULL)
-                {
-                FreeArgVee();
-                fprintf(stdout, "Unable to allocate memory in zip dll\n");
-                return ZE_MEM;
-                }
-            if (AllocMemory(argCee, Options.ExcludeList[k], "Exclude file list array", TRUE) != ZE_OK)
-                return ZE_MEM;
-            k++;
-            }
-   if (AllocMemory(argCee, "@", "End of Exclude List", FALSE) != ZE_OK)
-        return ZE_MEM;
-    }
-
-if (szIncludeList != NULL && szIncludeList[0] != '\0') /* Include file list -i */
-    {
-    if (AllocMemory(argCee, "-i", "Include file list", FALSE) != ZE_OK)
-        return ZE_MEM;
-    if ((k = ParseString(szIncludeList, argCee)) != ZE_OK)
-        return k;  /* Something was screwy with the parsed string
-                      bail out */
-    if (AllocMemory(argCee, "@", "End of Include List", FALSE) != ZE_OK)
-        return ZE_MEM;
-    }
-if (szExcludeList != NULL && szExcludeList[0] != '\0')  /* Exclude file list -x */
-    {
-    if (AllocMemory(argCee, "-x", "Exclude file list", FALSE) != ZE_OK)
-        return ZE_MEM;
-
-    if ((k = ParseString(szExcludeList, argCee)) != ZE_OK)
-        return k;  /* Something was screwy with the parsed string
-                      bail out */
-
-    if (AllocMemory(argCee, "@", "End of Exclude List", FALSE) != ZE_OK)
-        return ZE_MEM;
-    }
-
-if ((szTempDir != NULL) && (szTempDir[0] != '\0')
-     && Options.fTemp) /* Use temporary directory -b */
-    {
-    if (AllocMemory(argCee, "-b", "Temp dir switch command", FALSE) != ZE_OK)
-        return ZE_MEM;
-    if (AllocMemory(argCee, szTempDir, "Temporary directory", FALSE) != ZE_OK)
-        return ZE_MEM;
-    }
-
-if (AllocMemory(argCee, C.lpszZipFN, "Zip file name", FALSE) != ZE_OK)
-    return ZE_MEM;
-
-if ((szRootDir != NULL) && (szRootDir[0] != '\0'))
-    {
-    if (szRootDir[lstrlen(szRootDir)-1] != '\\')
-         lstrcat(szRootDir, "\\"); /* append trailing \\ */
-    if (C.FNV != NULL)
-        {
-        for (k = 0; k < C.argc; k++)
-            {
-            if (AllocMemory(argCee, C.FNV[k], "Making argv", FALSE) != ZE_OK)
-                return ZE_MEM;
-            if ((_strnicmp(szRootDir, C.FNV[k], lstrlen(szRootDir))) == 0)
-                {
-                m = 0;
-                for (j = lstrlen(szRootDir); j < lstrlen(C.FNV[k]); j++)
-                    argVee[argCee-1][m++] = C.FNV[k][j];
-                argVee[argCee-1][m] = '\0';
-                }
-            }
-        }
-
-    }
-else
-  if (C.FNV != NULL)
-    for (k = 0; k < C.argc; k++)
-        {
-        if (AllocMemory(argCee, C.FNV[k], "Making argv", FALSE) != ZE_OK)
-            return ZE_MEM;
-        }
-
-if (C.lpszAltFNL != NULL)
-    {
-    if ((k = ParseString(C.lpszAltFNL, argCee)) != ZE_OK)
-        return k;  /* Something was screwy with the parsed string
-                      bail out
-                    */
-    }
-
-
-
-argVee[argCee] = NULL;
-
-ZipRet = zipmain(argCee, argVee);
-
-/* Free the arguments in the array. Note this also restores the
-   current directory
- */
-FreeArgVee();
-
-return ZipRet;
-}
-
-#if CRYPT
-int encr_passwd(int modeflag, char *pwbuf, int size, const char *zfn)
-    {
-    return (*lpZipUserFunctions->password)(pwbuf, size, ((modeflag == ZP_PW_VERIFY) ?
-                  "Verify password: " : "Enter password: "),
-                  (char *)zfn);
-    }
-#endif /* CRYPT */
-
-void EXPENTRY ZpVersion(ZpVer far * p)   /* should be pointer to const struct */
-    {
-    p->structlen = ZPVER_LEN;
+    version.structlen = UZPVER_LEN;
 
 #ifdef BETA
-    p->flag = 1;
+    version.flag = 1;
 #else
-    p->flag = 0;
+    version.flag = 0;
 #endif
-#ifdef CRYPT
-    p->fEncryption = TRUE;
-#else
-    p->fEncryption = FALSE;
-#endif
-    lstrcpy(p->betalevel, Z_BETALEVEL);
-    lstrcpy(p->date, REVDATE);
+    version.betalevel = UZ_BETALEVEL;
+    version.date = UZ_VERSION_DATE;
 
 #ifdef ZLIB_VERSION
-    lstrcpy(p->zlib_version, ZLIB_VERSION);
-    p->flag |= 2;
+    version.zlib_version = ZLIB_VERSION;
+    version.flag |= 2;
 #else
-    p->zlib_version[0] = '\0';
+    version.zlib_version = NULL;
 #endif
 
-#ifdef ZIP64_SUPPORT
-    p->flag |= 4; /* Flag that ZIP64 was compiled in. */
+    /* someday each of these may have a separate patchlevel: */
+    version.unzip.major = UZ_MAJORVER;
+    version.unzip.minor = UZ_MINORVER;
+    version.unzip.patchlevel = UZ_PATCHLEVEL;
+
+    version.zipinfo.major = ZI_MAJORVER;
+    version.zipinfo.minor = ZI_MINORVER;
+    version.zipinfo.patchlevel = UZ_PATCHLEVEL;
+
+    /* these are retained for backward compatibility only: */
+    version.os2dll.major = UZ_MAJORVER;
+    version.os2dll.minor = UZ_MINORVER;
+    version.os2dll.patchlevel = UZ_PATCHLEVEL;
+
+    version.windll.major = UZ_MAJORVER;
+    version.windll.minor = UZ_MINORVER;
+    version.windll.patchlevel = UZ_PATCHLEVEL;
+
+    return &version;
+}
+
+void UZ_EXP UzpVersion2(UzpVer2 *version)
+{
+
+    version->structlen = UZPVER_LEN;
+
+#ifdef BETA
+    version->flag = 1;
+#else
+    version->flag = 0;
+#endif
+    strcpy(version->betalevel, UZ_BETALEVEL);
+    strcpy(version->date, UZ_VERSION_DATE);
+
+#ifdef ZLIB_VERSION
+    /* Although ZLIB_VERSION is a compile-time constant, we implement an
+       "overrun-safe" copy because its actual value is not under our control.
+     */
+    strncpy(version->zlib_version, ZLIB_VERSION,
+            sizeof(version->zlib_version) - 1);
+    version->zlib_version[sizeof(version->zlib_version) - 1] = '\0';
+    version->flag |= 2;
+#else
+    version->zlib_version[0] = '\0';
 #endif
 
-    p->zip.major = Z_MAJORVER;
-    p->zip.minor = Z_MINORVER;
-    p->zip.patchlevel = Z_PATCHLEVEL;
+    /* someday each of these may have a separate patchlevel: */
+    version->unzip.major = UZ_MAJORVER;
+    version->unzip.minor = UZ_MINORVER;
+    version->unzip.patchlevel = UZ_PATCHLEVEL;
 
-#ifdef OS2
-    p->os2dll.major = D2_MAJORVER;
-    p->os2dll.minor = D2_MINORVER;
-    p->os2dll.patchlevel = D2_PATCHLEVEL;
-#endif
-#ifdef WINDLL
-    p->windll.major = DW_MAJORVER;
-    p->windll.minor = DW_MINORVER;
-    p->windll.patchlevel = DW_PATCHLEVEL;
-#endif
+    version->zipinfo.major = ZI_MAJORVER;
+    version->zipinfo.minor = ZI_MINORVER;
+    version->zipinfo.patchlevel = UZ_PATCHLEVEL;
+
+    /* these are retained for backward compatibility only: */
+    version->os2dll.major = UZ_MAJORVER;
+    version->os2dll.minor = UZ_MINORVER;
+    version->os2dll.patchlevel = UZ_PATCHLEVEL;
+
+    version->windll.major = UZ_MAJORVER;
+    version->windll.minor = UZ_MINORVER;
+    version->windll.patchlevel = UZ_PATCHLEVEL;
+}
+
+
+
+
+
+#ifndef WINDLL
+
+int UZ_EXP UzpAltMain(int argc, char *argv[], UzpInit *init)
+{
+    int r, (*dummyfn)();
+
+
+    CONSTRUCTGLOBALS();
+
+    if (init->structlen >= (sizeof(ulg) + sizeof(dummyfn)) && init->msgfn)
+        G.message = init->msgfn;
+
+    if (init->structlen >= (sizeof(ulg) + 2*sizeof(dummyfn)) && init->inputfn)
+        G.input = init->inputfn;
+
+    if (init->structlen >= (sizeof(ulg) + 3*sizeof(dummyfn)) && init->pausefn)
+        G.mpause = init->pausefn;
+
+    if (init->structlen >= (sizeof(ulg) + 4*sizeof(dummyfn)) && init->userfn)
+        (*init->userfn)();    /* allow void* arg? */
+
+    r = unzip(__G__ argc, argv);
+    DESTROYGLOBALS();
+    RETURN(r);
+}
+
+#endif /* !WINDLL */
+
+
+
+
+#ifndef __16BIT__
+
+void UZ_EXP UzpFreeMemBuffer(UzpBuffer *retstr)
+{
+    if (retstr != NULL && retstr->strptr != NULL) {
+        free(retstr->strptr);
+        retstr->strptr = NULL;
+        retstr->strlength = 0;
     }
+}
+
+
+
+
+#ifndef WINDLL
+
+static int UzpDLL_Init OF((zvoid *pG, UzpCB *UsrFuncts));
+
+static int UzpDLL_Init(pG, UsrFuncts)
+zvoid *pG;
+UzpCB *UsrFuncts;
+{
+    int (*dummyfn)();
+
+    if (UsrFuncts->structlen >= (sizeof(ulg) + sizeof(dummyfn)) &&
+        UsrFuncts->msgfn)
+        ((Uz_Globs *)pG)->message = UsrFuncts->msgfn;
+    else
+        return FALSE;
+
+    if (UsrFuncts->structlen >= (sizeof(ulg) + 2*sizeof(dummyfn)) &&
+        UsrFuncts->inputfn)
+        ((Uz_Globs *)pG)->input = UsrFuncts->inputfn;
+
+    if (UsrFuncts->structlen >= (sizeof(ulg) + 3*sizeof(dummyfn)) &&
+        UsrFuncts->pausefn)
+        ((Uz_Globs *)pG)->mpause = UsrFuncts->pausefn;
+
+    if (UsrFuncts->structlen >= (sizeof(ulg) + 4*sizeof(dummyfn)) &&
+        UsrFuncts->passwdfn)
+        ((Uz_Globs *)pG)->decr_passwd = UsrFuncts->passwdfn;
+
+    if (UsrFuncts->structlen >= (sizeof(ulg) + 5*sizeof(dummyfn)) &&
+        UsrFuncts->statrepfn)
+        ((Uz_Globs *)pG)->statreportcb = UsrFuncts->statrepfn;
+
+    return TRUE;
+}
+
+
+int UZ_EXP UzpUnzipToMemory(char *zip, char *file, UzpOpts *optflgs,
+    UzpCB *UsrFuncts, UzpBuffer *retstr)
+{
+    int r;
+#if (defined(WINDLL) && !defined(CRTL_CP_IS_ISO))
+    char *intern_zip, *intern_file;
+#endif
+
+    CONSTRUCTGLOBALS();
+#if (defined(WINDLL) && !defined(CRTL_CP_IS_ISO))
+    intern_zip = (char *)malloc(strlen(zip)+1);
+    if (intern_zip == NULL) {
+       DESTROYGLOBALS();
+       return PK_MEM;
+    }
+    intern_file = (char *)malloc(strlen(file)+1);
+    if (intern_file == NULL) {
+       DESTROYGLOBALS();
+       free(intern_zip);
+       return PK_MEM;
+    }
+    ISO_TO_INTERN(zip, intern_zip);
+    ISO_TO_INTERN(file, intern_file);
+#   define zip intern_zip
+#   define file intern_file
+#endif
+    /* Copy those options that are meaningful for UzpUnzipToMemory, instead of
+     * a simple "memcpy(G.UzO, optflgs, sizeof(UzpOpts));"
+     */
+    uO.pwdarg = optflgs->pwdarg;
+    uO.aflag = optflgs->aflag;
+    uO.C_flag = optflgs->C_flag;
+    uO.qflag = optflgs->qflag;  /* currently,  overridden in unzipToMemory */
+
+    if (!UzpDLL_Init((zvoid *)&G, UsrFuncts)) {
+       DESTROYGLOBALS();
+       return PK_BADERR;
+    }
+    G.redirect_data = 1;
+
+    r = (unzipToMemory(__G__ zip, file, retstr) <= PK_WARN);
+
+    DESTROYGLOBALS();
+#if (defined(WINDLL) && !defined(CRTL_CP_IS_ISO))
+#  undef file
+#  undef zip
+    free(intern_file);
+    free(intern_zip);
+#endif
+    if (!r && retstr->strlength) {
+       free(retstr->strptr);
+       retstr->strptr = NULL;
+    }
+    return r;
+}
+#endif /* !WINDLL */
+#endif /* !__16BIT__ */
+
+
+
+
+
+#ifdef OS2DLL
+
+int UZ_EXP UzpFileTree(char *name, cbList(callBack), char *cpInclude[],
+                char *cpExclude[])
+{
+    int r;
+
+    CONSTRUCTGLOBALS();
+    uO.qflag = 2;
+    uO.vflag = 1;
+    uO.C_flag = 1;
+    G.wildzipfn = name;
+    G.process_all_files = TRUE;
+    if (cpInclude) {
+        char **ptr = cpInclude;
+
+        while (*ptr != NULL) ptr++;
+        G.filespecs = ptr - cpInclude;
+        G.pfnames = cpInclude, G.process_all_files = FALSE;
+    }
+    if (cpExclude) {
+        char **ptr = cpExclude;
+
+        while (*ptr != NULL) ptr++;
+        G.xfilespecs = ptr - cpExclude;
+        G.pxnames = cpExclude, G.process_all_files = FALSE;
+    }
+
+    G.processExternally = callBack;
+    r = process_zipfiles(__G)==0;
+    DESTROYGLOBALS();
+    return r;
+}
+
+#endif /* OS2DLL */
+
+
+
+
+/*---------------------------------------------------------------------------
+    Helper functions
+  ---------------------------------------------------------------------------*/
+
+
+void setFileNotFound(__G)
+    __GDEF
+{
+    G.filenotfound++;
+}
+
+
+
+int unzipToMemory(__GPRO__ char *zip, char *file, UzpBuffer *retstr)
+{
+    int r;
+    char *incname[2];
+
+    G.process_all_files = FALSE;
+    G.extract_flag = TRUE;
+    uO.qflag = 2;
+    G.wildzipfn = zip;
+
+    G.pfnames = incname;
+    incname[0] = file;
+    incname[1] = NULL;
+    G.filespecs = 1;
+
+    r = process_zipfiles(__G);
+    if (retstr) {
+        retstr->strptr = (char *)G.redirect_buffer;
+        retstr->strlength = G.redirect_size;
+    }
+    return r;                   /* returns `PK_???' error values */
+}
+
+
+
+int redirect_outfile(__G)
+     __GDEF
+{
+    if (G.redirect_size != 0 || G.redirect_buffer != NULL)
+        return FALSE;
+
+#ifndef NO_SLIDE_REDIR
+    G.redirect_slide = !G.pInfo->textmode;
+#endif
+#if (lenEOL != 1)
+    if (G.pInfo->textmode) {
+        G.redirect_size = G.lrec.ucsize * lenEOL;
+        if (G.redirect_size < G.lrec.ucsize)
+            G.redirect_size = ((G.lrec.ucsize > (ulg)-2L) ?
+                               G.lrec.ucsize : (ulg)-2L);
+    } else
+#endif
+    {
+        G.redirect_size = G.lrec.ucsize;
+    }
+#ifdef __16BIT__
+    if ((ulg)((extent)G.redirect_size) != G.redirect_size)
+        return FALSE;
+#endif
+#ifdef OS2
+    DosAllocMem((void **)&G.redirect_buffer, G.redirect_size+1,
+      PAG_READ|PAG_WRITE|PAG_COMMIT);
+    G.redirect_pointer = G.redirect_buffer;
+#else
+    G.redirect_pointer =
+      G.redirect_buffer = malloc((extent)(G.redirect_size+1));
+#endif
+    if (!G.redirect_buffer)
+        return FALSE;
+    G.redirect_pointer[G.redirect_size] = '\0';
+    return TRUE;
+}
+
+
+
+int writeToMemory(__GPRO__ ZCONST uch *rawbuf, extent size)
+{
+    int errflg = FALSE;
+
+    if ((uch *)rawbuf != G.redirect_pointer) {
+        extent redir_avail = (G.redirect_buffer + G.redirect_size) -
+                             G.redirect_pointer;
+
+        /* Check for output buffer overflow */
+        if (size > redir_avail) {
+           /* limit transfer data to available space, set error return flag */
+           size = redir_avail;
+           errflg = TRUE;
+        }
+        memcpy(G.redirect_pointer, rawbuf, size);
+    }
+    G.redirect_pointer += size;
+    return errflg;
+}
+
+
+
+
+int close_redirect(__G)
+     __GDEF
+{
+    if (G.pInfo->textmode) {
+        *G.redirect_pointer = '\0';
+        G.redirect_size = (ulg)(G.redirect_pointer - G.redirect_buffer);
+        if ((G.redirect_buffer =
+             realloc(G.redirect_buffer, G.redirect_size + 1)) == NULL) {
+            G.redirect_size = 0;
+            return EOF;
+        }
+    }
+    return 0;
+}
+
+
+
+
+#ifndef __16BIT__
+#ifndef WINDLL
+
+/* Purpose: Determine if file in archive contains the string szSearch
+
+   Parameters: archive  = archive name
+               file     = file contained in the archive. This cannot be
+                          a wild card to be meaningful
+               pattern  = string to search for
+               cmd      = 0 - case-insensitive search
+                          1 - case-sensitve search
+                          2 - case-insensitive, whole words only
+                          3 - case-sensitive, whole words only
+               SkipBin  = if true, skip any files that have control
+                          characters other than CR, LF, or tab in the first
+                          100 characters.
+
+   Returns:    TRUE if a match is found
+               FALSE if no match is found
+               -1 on error
+
+   Comments: This does not pretend to be as useful as the standard
+             Unix grep, which returns the strings associated with a
+             particular pattern, nor does it search past the first
+             matching occurrence of the pattern.
+ */
+
+int UZ_EXP UzpGrep(char *archive, char *file, char *pattern, int cmd,
+                   int SkipBin, UzpCB *UsrFuncts)
+{
+    int retcode = FALSE, compare;
+    ulg i, j, patternLen, buflen;
+    char * sz, *p;
+    UzpOpts flgopts;
+    UzpBuffer retstr;
+
+    memzero(&flgopts, sizeof(UzpOpts));         /* no special options */
+
+    if (!UzpUnzipToMemory(archive, file, &flgopts, UsrFuncts, &retstr)) {
+       return -1;   /* not enough memory, file not found, or other error */
+    }
+
+    if (SkipBin) {
+        if (retstr.strlength < 100)
+            buflen = retstr.strlength;
+        else
+            buflen = 100;
+        for (i = 0; i < buflen; i++) {
+            if (iscntrl(retstr.strptr[i])) {
+                if ((retstr.strptr[i] != 0x0A) &&
+                    (retstr.strptr[i] != 0x0D) &&
+                    (retstr.strptr[i] != 0x09))
+                {
+                    /* OK, we now think we have a binary file of some sort */
+                    free(retstr.strptr);
+                    return FALSE;
+                }
+            }
+        }
+    }
+
+    patternLen = strlen(pattern);
+
+    if (retstr.strlength < patternLen) {
+        free(retstr.strptr);
+        return FALSE;
+    }
+
+    sz = malloc(patternLen + 3); /* add two in case doing whole words only */
+    if (cmd > 1) {
+        strcpy(sz, " ");
+        strcat(sz, pattern);
+        strcat(sz, " ");
+    } else
+        strcpy(sz, pattern);
+
+    if ((cmd == 0) || (cmd == 2)) {
+        for (i = 0; i < strlen(sz); i++)
+            sz[i] = toupper(sz[i]);
+        for (i = 0; i < retstr.strlength; i++)
+            retstr.strptr[i] = toupper(retstr.strptr[i]);
+    }
+
+    for (i = 0; i < (retstr.strlength - patternLen); i++) {
+        p = &retstr.strptr[i];
+        compare = TRUE;
+        for (j = 0; j < patternLen; j++) {
+            /* We cannot do strncmp here, as we may be dealing with a
+             * "binary" file, such as a word processing file, or perhaps
+             * even a true executable of some sort. */
+            if (p[j] != sz[j]) {
+                compare = FALSE;
+                break;
+            }
+        }
+        if (compare == TRUE) {
+            retcode = TRUE;
+            break;
+        }
+    }
+
+    free(sz);
+    free(retstr.strptr);
+
+    return retcode;
+}
+#endif /* !WINDLL */
+#endif /* !__16BIT__ */
+
+
+
+
+int UZ_EXP UzpValidate(char *archive, int AllCodes)
+{
+    int retcode;
+    CONSTRUCTGLOBALS();
+
+    uO.jflag = 1;
+    uO.tflag = 1;
+    uO.overwrite_none = 0;
+    G.extract_flag = (!uO.zipinfo_mode &&
+                      !uO.cflag && !uO.tflag && !uO.vflag && !uO.zflag
+#ifdef TIMESTAMP
+                      && !uO.T_flag
+#endif
+                     );
+
+    uO.qflag = 2;                        /* turn off all messages */
+    G.fValidate = TRUE;
+    G.pfnames = (char **)&fnames[0];    /* assign default filename vector */
+#ifdef WINDLL
+    Wiz_NoPrinting(TRUE);
+#endif
+
+    if (archive == NULL) {      /* something is screwed up:  no filename */
+        DESTROYGLOBALS();
+        return PK_NOZIP;
+    }
+
+    G.wildzipfn = (char *)malloc(FILNAMSIZ + 1);
+    strcpy(G.wildzipfn, archive);
+#if (defined(WINDLL) && !defined(CRTL_CP_IS_ISO))
+    _ISO_INTERN(G.wildzipfn);
+#endif
+
+    G.process_all_files = TRUE;         /* for speed */
+
+    retcode = setjmp(dll_error_return);
+
+    if (retcode) {
+#ifdef WINDLL
+        Wiz_NoPrinting(FALSE);
+#endif
+        free(G.wildzipfn);
+        DESTROYGLOBALS();
+        return PK_BADERR;
+    }
+
+    retcode = process_zipfiles(__G);
+
+    free(G.wildzipfn);
+#ifdef WINDLL
+    Wiz_NoPrinting(FALSE);
+#endif
+    DESTROYGLOBALS();
+
+    /* PK_WARN == 1 and PK_FIND == 11. When we are just looking at an
+       archive, we should still be able to see the files inside it,
+       even if we can't decode them for some reason.
+
+       We also still want to be able to get at files even if there is
+       something odd about the zip archive, hence allow PK_WARN,
+       PK_FIND, IZ_UNSUP as well as PK_ERR
+     */
+
+    if (AllCodes)
+        return retcode;
+
+    if ((retcode == PK_OK) || (retcode == PK_WARN) || (retcode == PK_ERR) ||
+        (retcode == IZ_UNSUP) || (retcode == PK_FIND))
+        return TRUE;
+    else
+        return FALSE;
+}
+
+#endif /* DLL */

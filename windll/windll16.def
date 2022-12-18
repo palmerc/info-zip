@@ -1,15 +1,19 @@
-;module-definition file for Windows Zip DLL -- used by link.exe
-LIBRARY ZIP16 ; Library module name
-DESCRIPTION 'Windows Info-ZIP Zip DLL 1.01 by Info-ZIP, Mike White 1996'
+;module-definition file for Windows UnZip16 DLL -- used by link.exe
+LIBRARY UNZIP16 ; Library module name
+
+DESCRIPTION 'Windows Info-ZIP UnZip16 DLL by Mike White'
 
 CODE  PRELOAD FIXED
 
 DATA  PRELOAD MOVEABLE
 
 EXPORTS
-     ZpArchive
-     ZpVersion
-     ZpInit
-     ZpSetOptions
-     ZpGetOptions
+     Wiz_SingleEntryUnzip
+     UzpVersion
+     Wiz_Init
+     Wiz_SetOpts
+     Wiz_Unzip
+     Wiz_Validate
+     Wiz_NoPrinting
+     UzpVersion2
 

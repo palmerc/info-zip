@@ -1,74 +1,44 @@
-# Makefile for Zip, ZipCloak, ZipNote and ZipSplit
-
-# Supported Make utilities:
-# - Microsoft/IBM nmake
-# - dmake 3.8 or higher
-# - GNU make, at least version 3.68
-# - NOT watcom make
-# For Microsoft and Watcom C, better use NMAKE,
-# otherwise it doesn't matter.
-
-# Supported 16-bit C Compilers (created programs run under OS/2 1.x and 2.x):
-# - Microsoft C 6.00A
-# - Watcom C/C++ 16-bit
-
-# Supported 32-bit C Compilers (created programs run under OS/2 2.x only):
-# - GNU gcc (emx kit 0.9c or newer)
-# - IBM C Set/2 or C Set++   - does not yet work with ASM code
-# - Watcom C/C++ 32-bit      - does not yet work with ASM code
-# - Borland C++              - no ASM code yet
-# - MetaWare High C/C++      - no ASM code yet
-
-# Supported Cross-Compilers for MS-DOS:
-# - Microsoft C 6.00A (16-bit)
-# - Watcom C/C++ (16- and 32-bit)
-# - GNU gcc (emx kit 0.9c or newer, 32-bit)
-
-# Supported Cross-Compilers for Win32 (WinNT/Win95):
-# - GNU gcc (emx kit 0.9c or newer, with RSXNT 1.4 or newer)
-
-# Supported Assemblers:
-# - Microsoft MASM 6.00 with Microsoft C, IBM C
-# - Watcom WASM with Watcom C/C++
-# - GNU as with GNU gcc
+# Makefile for UnZip, UnZipSFX and fUnZip                     17 February 2002
+#
+#  supported compilers:
+#  - Microsoft C, version 6.00 or higher, for use under OS/2 1.x (16-bit)
+#  - Watcom C/C++, version 9.0+, for use under OS/2 1.x or 2.x+ (16/32-bit)
+#  - emx+gcc, version 0.9c or higher, for use under OS/2 2.x+ (32-bit)
+#  - IBM C Set++, for use under OS/2 2.x+ (32-bit)
+#  - Borland C++, for use under OS/2 2.x+ (32-bit)
+#  - Metaware High C/C++, for use under OS/2 2.x+ (32-bit)
+#
+#  supported cross-compilers:
+#  - Microsoft C, version 6.0 or 7.0, for use under DOS (16-bit)
+#  - Watcom C/C++, version 9.0+, for use under DOS/Win95/NT (16/32-bit)
+#  - GNU gcc (emx), version 0.9c or higher, for use under DOS/Win95/NT (32-bit)
+#
+#  supported assemblers:
+#  - Microsoft MASM 6.00 with Microsoft C
+#  - Watcom WASM with Watcom C/C++
+#  - GNU as with GNU gcc
 
 # To use MASM 5.x instead of MASM 6.00:
-# - set AS="masm -T -Ml"
-# - set ASEOL=";"
+#  - set AS="masm -t -Ml"
+#  - set ASEOL=";"
 
+# To use, enter "{d,n}make -f os2/makefile.os2" (this makefile depends on its
+# name being "makefile.os2", and it must be in the os2 subdirectory).
 
-# To use, enter "make/nmake/dmake -f os2/makefile.os2"
-# (this makefile depends on its name being "os2/makefile.os2").
+# Notes on Microsoft C 6.00 compilation for OS/2:
+#
+#   The resulting programs can be used under OS/2 protected mode only, not
+#   under DOS.  A larger stack has to be used for OS/2 because system calls
+#   use more stack than under DOS; 8k is recommended by Microsoft.
 
-# Add -DNO_ASM to CFLAGS and define OBJA to `nothing' if you do not have
-# masm or ml.
-# Add -DDYN_ALLOC to ASFLAGS if you have defined it in tailor.h or CFLAGS
-
-# Note: assembly language modules are really only supported for
-# Microsoft 16-bit and GNU gcc 32-bit compilation.
-
-# Notes on 16-bit (Microsoft C 6.00) compilation:
-
-#   The resulting programs can be used under OS/2 protected mode only.
-#   A larger stack has to be used for OS/2 because system calls
-#   use more stack than under DOS, 8k is recommended by Microsoft.
-#   Note that __STDC__ has to be defined explicitly with C 6.00 when -Ze
-#   is given, because Microsoft disables __STDC__ when their extensions
-#   are enabled. This is different from the C 5.10 behaviour.
-
-# Notes on 32-bit OS/2 compilation:
-
-#   The resulting programs can be used under OS/2 protected
-#   mode of OS/2 2.x only, not under 1.x and not under DOS.
-#   It makes no difference if __STDC__ is defined or not.
-#   Borland C++ works with DYN_ALLOC only.
-
-# Special Notes on IBM C/C++ compilation:
-
-#   The older C compiler (C Set/2) breaks, while optimizing, on deflate.c
-#   and trees.c (generates incorrect code). The newer C++ compiler (C Set++)
-#   doesn't but instead breaks on crypt.c in the initial version and up to
-#   CSD level 003. Starting with CSD level 004, it doesn't break any longer.
+# Notes on IBM C Set++, Watcom C/C++, Borland C++ or emx+gcc compilation:
+#
+#   The resulting programs can be used under protected mode of OS/2 2.x or
+#   higher only, not under OS/2 1.x and not under DOS.
+#
+#   The NFLAGS macro is used to work around an optimization bug in the IBM
+#   C++ Set compiler; this is fixed by CSD #4, so NFLAGS="" can be used for
+#   all targets below.
 
 # Notes on Watcom C/C++ compilation for DOS with the PMODE/W extender:
 #
@@ -83,426 +53,572 @@
 #       format os2 le
 #   end
 #
-#   PMODE/W 1.16 or higher is required.
-
+#   PMODE/W 1.16 or higher is required.  See also msdos/README for important
+#   notes about PMODE/W bugs.
 
 default:
-	@echo "Enter $(MAKE) -f os2/makefile.os2 target"
-	@echo "where target is one of:"
-	@echo "   msc mscdos ibm ibmdyn ibmdebug ibmprof metaware borland"
-	@echo "   gcc gccdyn gcczlib gccdebug gccdos gccwin32 gccw32dyn"
-	@echo "   watcom watcom16 watcomdos watcom16dos pmodew"
+	@echo "Enter `$(MAKE) -f os2/makefile.os2 target' from the main"
+	@echo "UnZip directory, where target is one of:"
+	@echo "   msc mscdebug mscdos ibm ibmdyn ibmdebug ibmprof"
+	@echo "   ibmdll ibmdyndll ibmdebugdll ibmprofdll"
+	@echo "   metaware borland gcc gccdyn gccdebug gccdos gccwin32"
+	@echo "   watcom watcom16 watcomdos watcom16dos pmodew watcomwin32"
 
-# MS C 6.00 for OS/2, 16-bit
+# MS C 6.00 for OS/2, 16-bit (should figure out way to split unzip/funzip
+# compiles so former is always large model and latter always small model...)
 msc:
-	$(MAKE) -f os2/makefile.os2 zips \
-	CC="cl -nologo -AL -Ocegit -Gs $(FP)" \
-	CFLAGS="-W1 -Zep -J -G2 -D__STDC__ -DOS2 -DASM_CRC" \
+	$(MAKE) -f os2/makefile.os2 all \
+	CC="cl -nologo -AL -Ocegit -Gs -I. $(FP)" \
+	CFLAGS="-G2 -Zp1 -W3 -DOS2 -DMSC -DASM_CRC $(LOCAL_UNZIP)" \
+	NFLAGS="" \
+	DLLFLAG="" \
 	AS="ml -nologo -c -Zm -Cp" \
 	ASFLAGS="-D__LARGE__ -D__286" \
 	LDFLAGS="-F 2000 -Lp -Fe" \
-	LDFLAGS2="-link /noe /pm:vio" \
+	LDFLAGS2="-link /noe" \
 	OUT="-Fo" \
 	OBJ=".obj" \
-	CRCA_O="crc_i86.obj" \
-	OBJA="match.obj" \
-	DEF="os2\zip.def"
+	CRC32="crc_i86" \
+	CRC32F="crc_i86" \
+	CRC32X="crc_i86" \
+	OBJF2="os2f.obj" \
+	DEF="os2\unzip.def"
 
-# MS C 6.00 for OS/2, 16-bit, debug
+# MS C 6.00 for OS/2, debug version
 mscdebug:
-	$(MAKE) -f os2/makefile.os2 zips \
-	CC="cl -nologo -AL -Zi -Od $(FP)" \
-	CFLAGS="-W1 -Zep -J -G2 -D__STDC__ -DOS2 -DASM_CRC" \
+	$(MAKE) -f os2/makefile.os2 all \
+	CC="cl -nologo -AL -Zi -Od -I. $(FP)" \
+	CFLAGS="-G2 -Zp1 -W3 -DOS2 -DMSC -DASM_CRC $(LOCAL_UNZIP)" \
+	NFLAGS="" \
+	DLLFLAG="" \
 	AS="ml -nologo -c -Zim -Cp" \
 	ASFLAGS="-D__LARGE__ -D__286" \
 	LDFLAGS="-F 2000 -Lp -Fe" \
-	LDFLAGS2="-link /noe /pm:vio" \
+	LDFLAGS2="-link /noe" \
 	OUT="-Fo" \
 	OBJ=".obj" \
-	CRCA_O="crc_i86.obj" \
-	OBJA="match.obj" \
-	DEF="os2\zip.def"
+	CRC32="crc_i86" \
+	CRC32F="crc_i86" \
+	CRC32X="crc_i86" \
+	OBJF2="os2f.obj" \
+	DEF="os2\unzip.def"
 
-# crosscompilation for MS-DOS with MS C 6.00
+# cross-compilation for MS-DOS with MS C 6.00 (same comment as above...formerly;
+# now unzip is large model again, because of DEFLATE_64 support)
 mscdos:
-	$(MAKE) -f os2/makefile.os2 zips \
-	CC="cl -nologo -AL -Ocegit -Gs $(FP)" \
-	CFLAGS="-W1 -Zep -J -D__STDC__ -DDOS -DASM_CRC -DDYN_ALLOC" \
+	$(MAKE) -f os2/makefile.os2 all \
+	CC="cl -nologo -AL -Oaict -Gs -I. $(FP)" \
+	CFLAGS="-Zp1 -W3 -DASM_CRC $(LOCAL_UNZIP)" \
+	NFLAGS="" \
+	DLLFLAG="" \
 	AS="ml -nologo -c -Zm -Cp" \
-	ASFLAGS="-D__LARGE__ -DDYN_ALLOC" \
-	LDFLAGS="-F 2000 -Lr -Fe" \
+	ASFLAGS="-D__LARGE__" \
+	LDFLAGS="-F 0C00 -Lr -Fe" \
 	LDFLAGS2="-link /noe /exe" \
 	OUT="-Fo" \
 	OBJ=".obj" \
-	CRCA_O="crc_i86.obj" \
-	OBJA="match.obj" \
-	OBJ2="msdos.obj" OBJU2="msdos_.obj" \
-	OSDEP_H="msdos/osdep.h" ZIPUP_H="msdos/zipup.h"
+	CRC32="crc_i86" \
+	CRC32F="crc_i86" \
+	CRC32X="crc_i86" \
+	OBJU2="msdos.obj" \
+	OBJX2="msdos_.obj" \
+	OBJF2="msdosf.obj" \
+	OSDEP_H="msdos/doscfg.h"
 
-
-# IBM C Set/2, statically linked runtime
+# IBM C Set, statically linked runtime
 ibm:
-	$(MAKE) -f os2/makefile.os2 zips \
-	CC="icc -Q -O -Gs" \
-	CFLAGS="-Sm -Sp1 -DOS2 -DNO_ASM" \
-	AS="ml -nologo -c -Zm -Cp" \
-	ASFLAGS="" \
+	$(MAKE) -f os2/makefile.os2 all \
+	CC="icc -Q -O -Gs -I." \
+	CFLAGS="-Sm -Sp1 -DOS2 $(LOCAL_UNZIP)" \
+	NFLAGS="" \
+	DLLFLAG="" \
 	LDFLAGS="-B/ST:0x50000 -Fe" \
 	LDFLAGS2="" \
 	OUT="-Fo" \
 	OBJ=".obj" \
-	OBJA="" \
-	DEF="os2/zip.def"
+	DEF="os2\unzip.def"
 
-# IBM C Set/2, dynamically linked runtime
+# IBM C Set, dynamically linked runtime
 ibmdyn:
-	$(MAKE) -f os2/makefile.os2 zips \
-	CC="icc -Q -O -Gd -Gs" \
-	CFLAGS="-Sm -Sp1 -DOS2 -DNO_ASM" \
-	AS="ml -nologo -c -Zm -Cp" \
-	ASFLAGS="" \
+	$(MAKE) -f os2/makefile.os2 all \
+	CC="icc -Q -O -Gs -Gd -I." \
+	CFLAGS="-Sm -Sp1 -DOS2 $(LOCAL_UNZIP)" \
+	NFLAGS="" \
+	DLLFLAG="" \
 	LDFLAGS="-B/ST:0x50000 -Fe" \
 	LDFLAGS2="" \
 	OUT="-Fo" \
 	OBJ=".obj" \
-	OBJA="" \
-	DEF="os2/zip.def"
+	DEF="os2\unzip.def"
 
-# IBM C Set/2, debug version
+# IBM C Set, debug version
 ibmdebug:
-	$(MAKE) -f os2/makefile.os2 zips \
-	CC="icc -Q -Ti" \
-	CFLAGS="-Sm -Sp1 -DOS2 -DNO_ASM -Tm" \
-	AS="ml -nologo -c -Zim -Cp" \
-	ASFLAGS="" \
+	$(MAKE) -f os2/makefile.os2 all \
+	CC="icc -Q -Ti -I." \
+	CFLAGS="-Sm -Sp1 -D__DEBUG_ALLOC__ -DOS2 $(LOCAL_UNZIP)" \
+	NFLAGS="" \
+	DLLFLAG="" \
 	LDFLAGS="-B/ST:0x50000 -Fe" \
 	LDFLAGS2="" \
 	OUT="-Fo" \
 	OBJ=".obj" \
-	OBJA="" \
-	DEF="os2/zip.def"
+	DEF="os2\unzip.def"
 
-# IBM C Set/2, profiling version for PROFIT
+# IBM C Set, profiling version for PROFIT
 ibmprof:
-	$(MAKE) -f os2/makefile.os2 zips \
-	CC="icc -Q -O -Gs -Gh -Ti" \
-	CFLAGS="-Sm -Sp1 -DOS2 -DNO_ASM" \
-	AS="ml -nologo -c -Zm -Cp" \
-	ASFLAGS="" \
+	$(MAKE) -f os2/makefile.os2 all \
+	CC="icc -Q -O -Gs -Gh -Ti -I." \
+	CFLAGS="-Sm -Sp1 -DOS2 $(LOCAL_UNZIP)" \
+	NFLAGS="" \
+	DLLFLAG="" \
 	LDFLAGS="-B/ST:0x50000 -Fe" \
+	LDFLAGS2="cppopa3.obj" \
+	OUT="-Fo" \
+	OBJ=".obj" \
+	DEF="os2\unzip.def"
+
+# IBM C Set, statically linked runtime
+ibmdll:
+	$(MAKE) -f os2/makefile.os2 dll \
+	CC="icc -Q -O -Gs -I." \
+	CFLAGS="-Sm -Sp1 -DOS2 $(LOCAL_UNZIP)" \
+	NFLAGS="" \
+	DLLFLAG="-Gm -Ge- -DDLL -DOS2DLL -DAPI_DOC" \
+	LDFLAGS="-Fe" \
+	LDFLAGS2="" \
+	OUT="-Fo" \
+	OBJ=".obj" \
+	DLLDEF="os2\rexxapi.def" \
+	STUBDEF="os2\stub.def" \
+	DEF="os2\unzip.def" \
+	APILIB="REXX.lib"
+
+# IBM C Set, dynamically linked runtime
+ibmdyndll:
+	$(MAKE) -f os2/makefile.os2 dll \
+	CC="icc -Q -O -Gs -Gd -I." \
+	CFLAGS="-Sm -Sp1 -DOS2 $(LOCAL_UNZIP)" \
+	NFLAGS="" \
+	DLLFLAG="-Gm -Ge- -DDLL -DOS2DLL -DAPI_DOC" \
+	LDFLAGS="-Fe" \
+	LDFLAGS2="" \
+	OUT="-Fo" \
+	OBJ=".obj" \
+	DLLDEF="os2\rexxapi.def" \
+	STUBDEF="os2\stub.def" \
+	DEF="os2\unzip.def" \
+	APILIB="REXX.lib"
+
+# IBM C Set, debug version
+ibmdebugdll:
+	$(MAKE) -f os2/makefile.os2 dll \
+	CC="icc -Q -Ti -I." \
+	CFLAGS="-Sm -Sp1 -D__DEBUG_ALLOC__ -DOS2 $(LOCAL_UNZIP)" \
+	NFLAGS="" \
+	DLLFLAG="-Gm -Ge- -DDLL -DOS2DLL -DAPI_DOC" \
+	LDFLAGS="-Fe" \
+	LDFLAGS2="" \
+	OUT="-Fo" \
+	OBJ=".obj" \
+	DLLDEF="os2\rexxapi.def" \
+	STUBDEF="os2\stub.def" \
+	DEF="os2\unzip.def" \
+	APILIB="REXX.lib"
+
+# IBM C Set, profiling version for PROFIT
+ibmprofdll:
+	$(MAKE) -f os2/makefile.os2 dll \
+	CC="icc -Q -O -Gs -Gh -Ti -I." \
+	CFLAGS="-Gm -Sm -Sp1 -DOS2 $(LOCAL_UNZIP)" \
+	NFLAGS="" \
+	DLLFLAG="-Gm -Ge- -DDLL -DOS2DLL -DAPI_DOC" \
+	LDFLAGS="-Fe" \
 	LDFLAGS2="profit.obj" \
 	OUT="-Fo" \
 	OBJ=".obj" \
-	OBJA="" \
-	DEF="os2/zip.def"
+	DLLDEF="os2\rexxapi.def" \
+	STUBDEF="os2\stub.def" \
+	DEF="os2\unzip.def" \
+	APILIB="REXX.lib"
 
 # Watcom C/386 9.0 or higher
 watcom:
-	$(MAKE) -f os2/makefile.os2 zips \
-	CC="wcl386 -bt=os2v2 -zq -Ox -s" \
-	CFLAGS="-Zp1 -DOS2 -DNO_ASM" \
-	AS="wasm -zq -bt=os2v2 -3p" \
+	$(MAKE) -f os2/makefile.os2 all \
+	CC="wcl386 -bt=os2v2 -zq -Ox -s -I." \
+	CFLAGS="-Zp1 -DOS2 -DASM_CRC $(LOCAL_UNZIP)" \
+	NFLAGS="" \
+	DLLFLAG="" \
+	AS="wasm -bt=os2v2 -zq -3 -mf" \
 	ASFLAGS="" \
 	LDFLAGS="-k0x50000 -x -l=os2v2 -Fe=" \
 	LDFLAGS2="" \
 	OUT="-Fo" \
 	OBJ=".obj" \
-	OBJA="" \
+	CRC32="crc_i386" \
+	CRC32F="crc_i386" \
+	CRC32X="crc_i386" \
+	DEF="" \
 	DIRSEP="\\" \
 	AS_DIRSEP="\\"
 
 # Watcom C/286 9.0 or higher
 watcom16:
-	$(MAKE) -f os2/makefile.os2 zips \
-	CC="wcl -bt=os2 -zq -ml -Ox -s" \
-	CFLAGS="-Zp1 -DOS2 -DNO_ASM" \
-	AS="wasm -zq -bt=os2 -2p -ml" \
+	$(MAKE) -f os2/makefile.os2 all \
+	CC="wcl -bt=os2 -zq -ml -Ox -s -I." \
+	CFLAGS="-Zp1 -DOS2 $(LOCAL_UNZIP)" \
+	NFLAGS="" \
+	DLLFLAG="" \
+	AS="wasm -bt=os2 -zq -2 -ml" \
 	ASFLAGS="" \
-	LDFLAGS="/\"option newfiles\" -k0x3000 -x -l=os2 -Fe=" \
+	LDFLAGS="-k0x2000 -x -l=os2 -Fe=" \
 	LDFLAGS2="" \
 	OUT="-Fo" \
 	OBJ=".obj" \
-	OBJA="" \
+	CRC32="crc_i86" \
+	CRC32F="crc_i86" \
+	CRC32X="crc_i86" \
+	OBJF2="os2f.obj" \
 	DIRSEP="\\" \
 	AS_DIRSEP="\\"
 
 # Watcom C/386 9.0 or higher, crosscompilation for DOS, DOS4GW extender
 watcomdos:
-	$(MAKE) -f os2/makefile.os2 zips \
-	CC="wcl386 -bt=dos4g -zq -Ox -s" \
-	CFLAGS="-Zp1 -DDOS -DMSDOS -DASM_CRC" \
-	AS="wasm -zq -bt=dos4g -3p" \
-	ASFLAGS="-DWATCOM_DSEG" \
+	$(MAKE) -f os2/makefile.os2 all \
+	CC="wcl386 -bt=dos4g -zq -Ox -s -I." \
+	CFLAGS="-Zp1 -DMSDOS -DASM_CRC $(LOCAL_UNZIP)" \
+	NFLAGS="" \
+	DLLFLAG="" \
+	AS="wasm -bt=dos4g -zq -3 -mf" \
+	ASFLAGS="" \
 	LDFLAGS="-k0x50000 -x -l=dos4g -Fe=" \
 	LDFLAGS2="" \
 	OUT="-Fo" \
 	OBJ=".obj" \
-	CRCA_O="crc_i386.obj" \
-	OBJA="match32.obj" \
-	OBJ2="msdos.obj" \
-	OBJU2="msdos_.obj" \
-	OSDEP_H="msdos/osdep.h" \
-	ZIPUP_H="msdos/zipup.h" \
+	CRC32="crc_i386" \
+	CRC32F="crc_i386" \
+	CRC32X="crc_i386" \
+	OBJU2="msdos.obj" \
+	OBJX2="msdos_.obj" \
+	OSDEP_H="msdos/doscfg.h" \
 	DIRSEP="\\" \
 	AS_DIRSEP="\\"
 
 # Watcom C/386 9.0 or higher, crosscompilation for DOS, PMODE/W extender
 pmodew:
-	$(MAKE) -f os2/makefile.os2 zips \
-	CC="wcl386 -bt=dos4g -zq -Ox -s" \
-	CFLAGS="-Zp1 -DDOS -DMSDOS -DASM_CRC" \
-	AS="wasm -zq -bt=dos4g -3p" \
-	ASFLAGS="-DWATCOM_DSEG" \
+	$(MAKE) -f os2/makefile.os2 all \
+	CC="wcl386 -bt=dos4g -zq -Ox -s -I." \
+	CFLAGS="-Zp1 -DMSDOS -DASM_CRC $(LOCAL_UNZIP)" \
+	NFLAGS="" \
+	DLLFLAG="" \
+	AS="wasm -bt=dos4g -zq -3 -mf" \
+	ASFLAGS="" \
 	LDFLAGS="-k0x50000 -x -l=pmodew -Fe=" \
 	LDFLAGS2="" \
 	OUT="-Fo" \
 	OBJ=".obj" \
-	CRCA_O="crc_i386.obj" \
-	OBJA="match32.obj" \
-	OBJ2="msdos.obj" \
-	OBJU2="msdos_.obj" \
-	OSDEP_H="msdos/osdep.h" \
-	ZIPUP_H="msdos/zipup.h" \
+	CRC32="crc_i386" \
+	CRC32F="crc_i386" \
+	CRC32X="crc_i386" \
+	OBJU2="msdos.obj" \
+	OBJX2="msdos_.obj" \
+	OSDEP_H="msdos/doscfg.h" \
 	DIRSEP="\\" \
 	AS_DIRSEP="\\"
 
 # Watcom C/286 9.0 or higher, crosscompilation for DOS
 watcom16dos:
-	$(MAKE) -f os2/makefile.os2 zips \
-	CC="wcl -bt=dos -zq -ml -Ox -s" \
-	CFLAGS="-Zp1 -DDOS -DMSDOS -DDYN_ALLOC -DNO_ASM" \
-	AS="wasm -zq -bt=dos -2 -ml" \
-	ASFLAGS="-DDYN_ALLOC" \
-	LDFLAGS="-k0x2000 -x -l=dos -Fe=" \
+	$(MAKE) -f os2/makefile.os2 all \
+	CC="wcl -bt=dos -zq -ml -Ox -s -I." \
+	CFLAGS="-Zp1 -DMSDOS $(LOCAL_UNZIP)" \
+	NFLAGS="" \
+	DLLFLAG="" \
+	AS="wasm -bt=dos -0 -ml" \
+	ASFLAGS="-D__LARGE__" \
+	LDFLAGS="-k0xC00 -x -l=dos -Fe=" \
 	LDFLAGS2="" \
 	OUT="-Fo" \
 	OBJ=".obj" \
-	OBJA="" \
-	OBJ2="msdos.obj" \
-	OBJU2="msdos_.obj" \
-	OSDEP_H="msdos/osdep.h" \
-	ZIPUP_H="msdos/zipup.h" \
+	OBJU2="msdos.obj" \
+	OBJX2="msdos_.obj" \
+	OBJF2="msdosf.obj" \
+	OSDEP_H="msdos/doscfg.h" \
+	DIRSEP="\\" \
+	AS_DIRSEP="\\"
+
+# Watcom C/386 9.0 or higher, crosscompilation for Win95/NT
+watcomwin32:
+	$(MAKE) -f os2/makefile.os2 all \
+	CC="wcl386 -bt=NT -zq -Ox -s -I." \
+	CFLAGS="-Zp1 -DWIN32 -DASM_CRC $(LOCAL_UNZIP)" \
+	NFLAGS="" \
+	DLLFLAG="" \
+	AS="wasm -bt=NT -zq -3 -mf" \
+	ASFLAGS="" \
+	LDFLAGS="-k0x50000 -x -l=NT -Fe=" \
+	LDFLAGS2="" \
+	OUT="-Fo" \
+	OBJ=".obj" \
+	CRC32="crc_i386" \
+	CRC32F="crc_i386" \
+	CRC32X="crc_i386" \
+	OBJU2="win32.obj nt.obj" \
+	OBJX2="win32_.obj nt_.obj" \
+	OBJF2="win32f.obj" \
+	DEF="" \
 	DIRSEP="\\" \
 	AS_DIRSEP="\\"
 
 # MetaWare High C/C++ 3.2
 metaware:
-	$(MAKE) -f os2/makefile.os2 zips \
-	CC="hc -O2" \
-	CFLAGS="-D__32BIT__ -DOS2 -DNO_ASM" \
-	AS="ml -nologo -c -Zm -Cp" \
-	ASFLAGS="" \
+	$(MAKE) -f os2/makefile.os2 all \
+	CC="hc -O2 -I." \
+	CFLAGS="-D__32BIT__ -DOS2 $(LOCAL_UNZIP)" \
+	NFLAGS="" \
+	DLLFLAG="" \
 	LDFLAGS="-o " \
 	LDFLAGS2="" \
 	OUT="-o ./" \
 	OBJ=".obj" \
-	DEF="-Hdef=os2/zip.def"
+	DEF="-Hdef=os2\unzip.def"
 
 # Borland C++
 borland:
-	$(MAKE) -f os2/makefile.os2 zips \
-	CC="bcc -O" \
-	CFLAGS="-w- -DOS2 -DDYN_ALLOC -DNO_ASM" \
-	AS="ml -nologo -c -Zm -Cp" \
-	ASFLAGS="" \
+	$(MAKE) -f os2/makefile.os2 all \
+	CC="bcc -O -I. -Ios2" \
+	CFLAGS="-w- -D__cdecl -D__32BIT__ -DOS2 $(LOCAL_UNZIP)" \
+	NFLAGS="" \
+	DLLFLAG="" \
 	LDFLAGS="-e" \
 	LDFLAGS2="" \
 	OUT="-o" \
 	OBJ=".obj" \
-	OBJA="" \
-	DEF="-sDos2/zip.def"
+	DEF="-sDos2\unzip.def"
 
-# emx 0.9c, gcc, OMF format, statically linked C runtime and emx
+# emx, gcc, OMF format, statically linked C runtime
 gcc:
-	$(MAKE) -f os2/makefile.os2 zips \
-	CC="gcc -Zomf -O -Wimplicit" \
-	CFLAGS="-DOS2 -DASM_CRC" \
+	$(MAKE) -f os2/makefile.os2 all \
+	CC="gcc -Zomf -O -I." \
+	CFLAGS="-Wall -DOS2 -DASM_CRC $(LOCAL_UNZIP)" \
+	NFLAGS="" \
+	DLLFLAG="" \
 	AS="gcc -Zomf" \
 	ASFLAGS="-Di386" \
 	LDFLAGS="-o ./" \
-	LDFLAGS2="-Zsys -Zstack 320 -s -Zsmall-conv" \
+	LDFLAGS2="-Zsmall-conv -Zstack 320 -Zsys -s" \
 	OUT="-o" \
 	OBJ=".obj" \
-	CRCA_O="crc_gcc.obj" \
-	OBJA="matchgcc.obj" \
-	DEF="os2/zip.def"
+	CRC32="crc_gcc" \
+	CRC32F="crc_gcc" \
+	CRC32X="crc_gcc" \
+	DEF="os2/unzip.def"
 
-# emx 0.9c, gcc, OMF format, dynamically linked C runtime and emx
+# emx, gcc, OMF format, dynamically linked C runtime
 gccdyn:
-	$(MAKE) -f os2/makefile.os2 zips \
-	CC="gcc -Zomf -O -Wimplicit" \
-	CFLAGS="-DOS2 -DASM_CRC" \
+	$(MAKE) -f os2/makefile.os2 all \
+	CC="gcc -Zomf -O -I." \
+	CFLAGS="-Wall -DOS2 -DASM_CRC $(LOCAL_UNZIP)" \
+	NFLAGS="" \
+	DLLFLAG="" \
 	AS="gcc -Zomf" \
 	ASFLAGS="-Di386" \
 	LDFLAGS="-o ./" \
-	LDFLAGS2="-Zcrtdll -Zstack 320 -s" \
+	LDFLAGS2="-Zstack 320 -Zcrtdll -s" \
 	OUT="-o" \
 	OBJ=".obj" \
-	CRCA_O="crc_gcc.obj" \
-	OBJA="matchgcc.obj" \
-	DEF="os2/zip.def"
+	CRC32="crc_gcc" \
+	CRC32F="crc_gcc" \
+	CRC32X="crc_gcc" \
+	DEF="os2/unzip.def"
 
-# emx 0.9c, gcc, OMF format, statically linked zlib, C runtime, and emx
-gcczlib:
-	$(MAKE) -f os2/makefile.os2 zips \
-	CC="gcc -Zomf -O -Wimplicit" \
-	CFLAGS="-DOS2 -DUSE_ZLIB" \
-	AS="gcc -Zomf" \
-	ASFLAGS="-Di386 -DUSE_ZLIB" \
-	LDFLAGS="-o ./" \
-	LDFLAGS2="-L. -lzlib -Zsys -Zstack 320 -s -Zsmall-conv" \
-	OUT="-o" \
-	OBJ=".obj" \
-	CRCA_O="" \
-	OBJA="" \
-	DEF="os2/zip.def"
-
-# emx 0.9c, gcc, a.out format, with debug info for gdb
+# emx, gcc, a.out format, with debug info for gdb
 gccdebug:
-	$(MAKE) -f os2/makefile.os2 zips \
-	CC="gcc -g -Wimplicit" \
-	CFLAGS="-DOS2 -DASM_CRC" \
-	AS="gcc" \
+	$(MAKE) -f os2/makefile.os2 all \
+	CC="gcc -g -I." \
+	CFLAGS="-Wall -DOS2 -DASM_CRC $(LOCAL_UNZIP)" \
+	NFLAGS="" \
+	DLLFLAG="" \
+	AS="gcc -g" \
 	ASFLAGS="-Di386" \
 	LDFLAGS="-o ./" \
-	LDFLAGS2="" \
+	LDFLAGS2="-Zsmall-conv" \
 	OUT="-o" \
 	OBJ=".o" \
-	CRCA_O="crc_gcc.o" \
-	OBJA="matchgcc.o" \
-	DEF="os2/zip.def"
+	CRC32="crc_gcc" \
+	CRC32F="crc_gcc" \
+	CRC32X="crc_gcc"
 
-# emx 0.9c, gcc, a.out format, for MS-DOS
+# emx, gcc, a.out format, cross-compilation for MS-DOS
 gccdos:
-	$(MAKE) -f os2/makefile.os2 zips \
-	CC="gcc -O -Wimplicit" \
-	CFLAGS="-DDOS -DMSDOS -DASM_CRC" \
+	$(MAKE) -f os2/makefile.os2 all \
+	CC="gcc -O -I." \
+	CFLAGS="-Wall -DMSDOS -DASM_CRC $(LOCAL_UNZIP)" \
+	NFLAGS="" \
+	DLLFLAG="" \
 	AS="gcc" \
 	ASFLAGS="-Di386" \
 	LDFLAGS="-o ./" \
-	LDFLAGS2="-s -Zsmall-conv" \
+	LDFLAGS2="-Zsmall-conv -s" \
 	OUT="-o" \
 	OBJ=".o" \
-	CRCA_O="crc_gcc.o" \
-	OBJA="matchgcc.o" \
-	OBJ2="msdos.o" \
-	OBJU2="msdos_.o" \
-	OSDEP_H="msdos/osdep.h" \
-	ZIPUP_H="msdos/zipup.h"
+	CRC32="crc_gcc" \
+	CRC32F="crc_gcc" \
+	CRC32X="crc_gcc" \
+	OBJU2="msdos.o" \
+	OBJX2="msdos_.o" \
+	OSDEP_H="msdos/doscfg.h"
 
-# emx 0.9c, gcc, RSXNT 1.4, cross-compilation for Win32
+# emx, gcc, RSXNT, cross-compilation for Win32, statically linked C runtime
 gccwin32:
-	$(MAKE) -f os2/makefile.os2 zips \
-	CC="gcc -Zwin32 -O -m486 -Wall" \
-	CFLAGS="-DWIN32 -DASM_CRC" \
-	AS="gcc -Zwin32" \
+	$(MAKE) -f os2/makefile.os2 all \
+	CC="gcc -Zwin32 -O2 -I." \
+	CFLAGS="-Wall -DWIN32 -DASM_CRC $(LOCAL_UNZIP)" \
+	NFLAGS="" \
+	DLLFLAG="" \
+	AS="gcc" \
 	ASFLAGS="-Di386" \
-	LDFLAGS="-o ./" \
-	LDFLAGS2="-ladvapi32 -Zsys -Zsmall-conv -s" \
+	LDFLAGS="-Zsys -o ./" \
+	LDFLAGS2="-ladvapi32 -Zsmall-conv -s" \
 	OUT="-o" \
 	OBJ=".o" \
-	CRCA_O="crc_gcc.o" \
-	OBJA="matchgcc.o" \
-	OBJ2="win32zip.o win32.o nt.o" \
-	OBJU2="win32_.o" \
-	OSDEP_H="win32/osdep.h" \
-	ZIPUP_H="win32/zipup.h" \
-	DEF="win32/zip.def"
-
-# emx 0.9c, gcc, RSXNT 1.4, cross-compilation for Win32, use emx C rtl DLL
-gccw32dyn:
-	$(MAKE) -f os2/makefile.os2 zips \
-	CC="gcc -Zwin32 -Zcrtdll=crtrsxnt -O -m486 -Wall" \
-	CFLAGS="-DWIN32 -DASM_CRC" \
-	AS="gcc -Zwin32" \
-	ASFLAGS="-Di386" \
-	LDFLAGS="-o ./" \
-	LDFLAGS2="-ladvapi32 -s" \
-	OUT="-o" \
-	OBJ=".o" \
-	CRCA_O="crc_gcc.o" \
-	OBJA="matchgcc.o" \
-	OBJ2="win32zip.o win32.o nt.o" \
-	OBJU2="win32_.o" \
-	OSDEP_H="win32/osdep.h" \
-	ZIPUP_H="win32/zipup.h" \
-	DEF="win32/zip.def"
-
-# VPATH = .;os2
+	CRC32="crc_gcc" \
+	CRC32F="crc_gcc" \
+	CRC32X="crc_gcc" \
+	OBJU2="win32.o nt.o" \
+	OBJX2="win32_.o nt_.o" \
+	OBJF2="win32f.o" \
+	OSDEP_H="win32/w32cfg.h"
 
 # variables
 
-#default settings for target dependent macros:
+# LOCAL_UNZIP = -DREENTRANT
+
+# default settings for target dependent macros:
 DIRSEP = /
 AS_DIRSEP = /
-# LOCAL_OPTS =
-CCFLAGS = $(CFLAGS) $(LOCAL_OPTS)
 
-OSDEP_H = os2/osdep.h
-ZIPUP_H = os2/os2zip.h os2/zipup.h
-CRCA_O  =
+OSDEP_H = os2/os2data.h os2/os2cfg.h
+CRC32   = crc32
+CRC32F  = crc32f
+CRC32X  = crc32_
 
+OBJU  = unzip$(OBJ) $(CRC32)$(OBJ) crctab$(OBJ) crypt$(OBJ) envargs$(OBJ) \
+	explode$(OBJ) extract$(OBJ) fileio$(OBJ) globals$(OBJ) \
+	inflate$(OBJ) list$(OBJ) match$(OBJ) process$(OBJ) ttyio$(OBJ) \
+	unreduce$(OBJ) unshrink$(OBJ) zipinfo$(OBJ)
+OBJU2 = os2$(OBJ) os2acl$(OBJ)
+OBJX  = unzipsf_$(OBJ) $(CRC32X)$(OBJ) crctab_$(OBJ) crypt_$(OBJ) \
+        extract_$(OBJ) fileio_$(OBJ) globals_$(OBJ) inflate_$(OBJ) \
+	match_$(OBJ) process_$(OBJ) ttyio_$(OBJ)
+OBJX2 = os2_$(OBJ) os2acl_$(OBJ)
+OBJDLL= api$(OBJ) apihelp$(OBJ) rexxhelp$(OBJ) rexxapi$(OBJ)
+OBJF  = funzip$(OBJ) $(CRC32F)$(OBJ) cryptf$(OBJ) inflatef$(OBJ) \
+	globalsf$(OBJ) ttyiof$(OBJ)
+OBJF2 =
 
-OBJZ =  zip$(OBJ) zipfile$(OBJ) zipup$(OBJ) fileio$(OBJ) util$(OBJ) \
-        crc32$(OBJ) $(CRCA_O) globals$(OBJ) \
-	deflate$(OBJ) trees$(OBJ) crypt$(OBJ) ttyio$(OBJ)
-OBJ2 =	os2zip$(OBJ) os2$(OBJ) os2acl$(OBJ)
-
-OBJU =  zipfile_$(OBJ) fileio_$(OBJ) util_$(OBJ) globals$(OBJ)
-OBJU2 = os2zip_$(OBJ)
-
-OBJN =  zipnote$(OBJ) $(OBJU) $(OBJU2)
-OBJS =  zipsplit$(OBJ) $(OBJU) $(OBJU2)
-OBJC =  zipcloak$(OBJ) crc32_$(OBJ) crypt_$(OBJ) ttyio$(OBJ) $(OBJU) $(OBJU2)
-
-ZIP_H = zip.h ziperr.h tailor.h $(OSDEP_H)
+UNZIP_H = unzip.h unzpriv.h globals.h $(OSDEP_H)
 
 # rules
 
-.SUFFIXES: .c $(OBJ)
+.SUFFIXES:	.c .asm $(OBJ)
 
 .c$(OBJ):
-	$(CC) -c -I. $(CCFLAGS) $<
+	$(CC) -c $(CFLAGS) $(DLLFLAG) $<
 
 .asm$(OBJ):
 	$(AS) $(ASFLAGS) $< $(ASEOL)
 
 # targets
 
-zips:	zip.exe zipnote.exe zipsplit.exe zipcloak.exe
+all:	unzip.exe funzip.exe unzipsfx.exe
+dll:	unzip32.dll unzip.stb funzip.exe unzipsfx.exe
 
-zip$(OBJ):	zip.c $(ZIP_H) revision.h crc32.h crypt.h ttyio.h
-zipfile$(OBJ):	zipfile.c $(ZIP_H) crc32.h
-zipup$(OBJ):	zipup.c $(ZIP_H) revision.h crc32.h crypt.h $(ZIPUP_H)
-fileio$(OBJ):	fileio.c $(ZIP_H) crc32.h
-util$(OBJ):	util.c $(ZIP_H)
-globals$(OBJ):	globals.c $(ZIP_H)
-deflate$(OBJ):	deflate.c $(ZIP_H)
-trees$(OBJ):	trees.c $(ZIP_H)
-crc32$(OBJ):	crc32.c $(ZIP_H) crc32.h
-crypt$(OBJ):	crypt.c $(ZIP_H) crypt.h crc32.h ttyio.h
-ttyio$(OBJ):	ttyio.c $(ZIP_H) crypt.h ttyio.h
+unzip.exe: $(OBJU) $(OBJU2)
+	$(CC) $(LDFLAGS)$@ $(DEF) $(OBJU) $(OBJU2) $(LDFLAGS2)
 
-os2zip$(OBJ):	os2/os2zip.c $(ZIP_H) os2/os2zip.h os2/os2acl.h
-	$(CC) -c -I. $(CCFLAGS) os2$(DIRSEP)os2zip.c
+funzip.exe: $(OBJF) $(OBJF2)
+	$(CC) $(LDFLAGS)$@ $(DEF) $(OBJF) $(OBJF2) $(LDFLAGS2)
 
-os2$(OBJ):	os2/os2.c $(ZIP_H) os2/os2zip.h
-	$(CC) -c -I. $(CCFLAGS) os2$(DIRSEP)os2.c
+unzipsfx.exe:	$(OBJX) $(OBJX2)
+	$(CC) $(LDFLAGS)$@ $(DEF) $(OBJX) $(OBJX2) $(LDFLAGS2)
 
-os2acl$(OBJ):	os2/os2acl.c os2/os2acl.h
-	$(CC) -c -I. $(CCFLAGS) os2$(DIRSEP)os2acl.c
+unzip32.dll: $(DLLDEF) $(OBJU) $(OBJU2) $(OBJDLL)
+	$(CC) $(DLLFLAG) $(LDFLAGS)$@ $(DLLDEF) $(OBJU) $(OBJDLL) $(OBJU2) $(APILIB) $(LDFLAGS2)
 
-msdos$(OBJ):	msdos/msdos.c $(ZIP_H)
-	$(CC) -c -I. $(CCFLAGS) msdos$(DIRSEP)msdos.c
+unzip.stb: unzipstb$(OBJ) $(STUBDEF)
+	$(CC) $(LDFLAGS)$@ $(STUBDEF) unzipstb$(OBJ) $(LDFLAGS2)
+	copy unzip.stb unzip.exe
 
-win32zip$(OBJ):	win32/win32zip.c $(ZIP_H) win32/win32zip.h win32/nt.h
-	$(CC) -c -I. $(CCFLAGS) win32$(DIRSEP)win32zip.c
+# dependencies
 
-win32$(OBJ):	win32/win32.c $(ZIP_H) win32/win32zip.h
-	$(CC) -c -I. $(CCFLAGS) win32$(DIRSEP)win32.c
+apihelp$(OBJ):	apihelp.c $(UNZIP_H) unzvers.h
+crc32$(OBJ):	crc32.c $(UNZIP_H) zip.h
+crctab$(OBJ):	crctab.c $(UNZIP_H) zip.h
+envargs$(OBJ):	envargs.c $(UNZIP_H)
+explode$(OBJ):	explode.c $(UNZIP_H)
+extract$(OBJ):	extract.c $(UNZIP_H) crypt.h
+fileio$(OBJ):	fileio.c $(UNZIP_H) crypt.h ttyio.h ebcdic.h
+globals$(OBJ):	globals.c $(UNZIP_H)
+inflate$(OBJ):	inflate.c $(UNZIP_H)
+list$(OBJ):	list.c $(UNZIP_H)
+match$(OBJ):	match.c $(UNZIP_H)
+process$(OBJ):	process.c $(UNZIP_H)
+ttyio$(OBJ):	ttyio.c $(UNZIP_H) zip.h crypt.h ttyio.h
+unreduce$(OBJ):	unreduce.c $(UNZIP_H)
+unshrink$(OBJ):	unshrink.c $(UNZIP_H)
+unzip$(OBJ):	unzip.c $(UNZIP_H) crypt.h unzvers.h consts.h
+api$(OBJ):	api.c $(UNZIP_H) unzvers.h
+zipinfo$(OBJ):	zipinfo.c $(UNZIP_H)
 
-nt$(OBJ):	win32/nt.c win32/nt.h
-	$(CC) -c -I. $(CCFLAGS) win32$(DIRSEP)nt.c
+funzip$(OBJ):	funzip.c $(UNZIP_H) crypt.h ttyio.h tables.h	# funzip only
+	$(CC) -c $(CFLAGS) funzip.c
+
+unzipstb$(OBJ):	unzipstb.c					# DLL version
+	$(CC) -c $(CFLAGS) unzipstb.c
+
+msdos$(OBJ):	msdos/msdos.c $(UNZIP_H) unzvers.h		# DOS only
+	$(CC) -c $(CFLAGS) msdos$(DIRSEP)msdos.c
+
+msdos_$(OBJ):	msdos/msdos.c $(UNZIP_H)			# DOS unzipsfx
+	$(CC) -c $(CFLAGS) -DSFX $(OUT)$@ msdos$(DIRSEP)msdos.c
+
+msdosf$(OBJ):	msdos/msdos.c $(UNZIP_H)			# DOS funzip
+	$(CC) -c $(CFLAGS) -DFUNZII $(OUT)$@ msdos$(DIRSEP)msdos.c
+
+win32$(OBJ):	win32/win32.c $(UNZIP_H) win32/nt.h unzvers.h	# Win32 only
+	$(CC) -c $(CFLAGS) win32$(DIRSEP)win32.c
+
+nt$(OBJ):	win32/nt.c $(UNZIP_H) win32/nt.h		# Win32 only
+	$(CC) -c $(CFLAGS) win32$(DIRSEP)nt.c
+
+win32_$(OBJ):	win32/win32.c $(UNZIP_H) win32/nt.h		# Win32 unzipsfx
+	$(CC) -c $(CFLAGS) -DSFX $(OUT)$@ win32$(DIRSEP)win32.c
+
+nt_$(OBJ):	win32/nt.c $(UNZIP_H) win32/nt.h		# Win32 unzipsfx
+	$(CC) -c $(CFLAGS) -DSFX $(OUT)$@ win32$(DIRSEP)nt.c
+
+win32f$(OBJ):	win32/win32.c $(UNZIP_H) win32/nt.h		# Win32 funzip
+	$(CC) -c $(CFLAGS) -DFUNZIP $(OUT)$@ win32$(DIRSEP)win32.c
+
+os2$(OBJ):	os2/os2.c $(UNZIP_H) unzvers.h			# OS/2 only
+	$(CC) -c $(CFLAGS) $(DLLFLAG) os2$(DIRSEP)os2.c
+
+os2_$(OBJ):	os2/os2.c $(UNZIP_H)				# OS/2 unzipsfx
+	$(CC) -c $(CFLAGS) -DSFX $(OUT)$@ os2$(DIRSEP)os2.c
+
+os2f$(OBJ):	os2/os2.c $(UNZIP_H)				# OS/2 funzip
+	$(CC) -c $(CFLAGS) -DFUNZIP $(OUT)$@ os2$(DIRSEP)os2.c
+
+os2acl$(OBJ):	os2/os2acl.c $(UNZIP_H) unzvers.h		# OS/2 only
+	$(CC) -c $(CFLAGS) $(DLLFLAG) os2$(DIRSEP)os2acl.c
+
+os2acl_$(OBJ):	os2/os2acl.c $(UNZIP_H) unzvers.h		# OS/2 unzipsfx
+	$(CC) -c $(CFLAGS) -DSFX $(OUT)$@ os2$(DIRSEP)os2acl.c
+
+rexxhelp$(OBJ):	os2/rexxhelp.c					# OS/2 DLL only
+	$(CC) -c $(CFLAGS) $(DLLFLAG) os2$(DIRSEP)rexxhelp.c
+
+rexxapi$(OBJ):	os2/rexxapi.c					# OS/2 DLL only
+	$(CC) -c $(CFLAGS) $(DLLFLAG) os2$(DIRSEP)rexxapi.c
 
 crc_i86$(OBJ):	msdos/crc_i86.asm				# 16bit only
 	$(AS) $(ASFLAGS) msdos$(AS_DIRSEP)crc_i86.asm $(ASEOL)
@@ -513,51 +629,54 @@ crc_i386$(OBJ):	win32/crc_i386.asm				# 32bit, MASM
 crc_gcc$(OBJ):	crc_i386.S					# 32bit, GNU AS
 	$(AS) $(ASFLAGS) -x assembler-with-cpp -c -o $@ crc_i386.S
 
-match$(OBJ):	msdos/match.asm
-	$(AS) $(ASFLAGS) msdos$(AS_DIRSEP)match.asm $(ASEOL)
+# NFLAGS are solely used as work-around for optimization bug in IBM C++ Set
+crypt$(OBJ):	crypt.c $(UNZIP_H) zip.h crypt.h ttyio.h
+	$(CC) -c $(CFLAGS) $(DLLFLAG) $(NFLAGS) crypt.c
 
-match32$(OBJ):	win32/match32.asm
-	$(AS) $(ASFLAGS) win32$(AS_DIRSEP)match32.asm
+cryptf$(OBJ):	crypt.c $(UNZIP_H) zip.h crypt.h ttyio.h	# funzip only
+	$(CC) -c $(CFLAGS) $(NFLAGS) -DFUNZIP $(OUT)$@ crypt.c
 
-matchgcc$(OBJ):	match.S
-	$(AS) $(ASFLAGS) -x assembler-with-cpp -c -o $@ match.S
+crc32f$(OBJ):	crc32.c $(UNZIP_H) zip.h			# funzip only
+	$(CC) -c $(CFLAGS) -DFUNZIP $(OUT)$@ crc32.c
 
-zipcloak$(OBJ):	zipcloak.c $(ZIP_H) revision.h crc32.h crypt.h ttyio.h
-zipnote$(OBJ):	zipnote.c $(ZIP_H) revision.h
-zipsplit$(OBJ): zipsplit.c $(ZIP_H) revision.h
+globalsf$(OBJ):	globals.c $(UNZIP_H)				# funzip only
+	$(CC) -c $(CFLAGS) -DFUNZIP $(OUT)$@ globals.c
 
-zipfile_$(OBJ):	zipfile.c $(ZIP_H) crc32.h
-	$(CC) -c -I. $(CCFLAGS) -DUTIL $(OUT)$@ zipfile.c
+inflatef$(OBJ):	inflate.c inflate.h $(UNZIP_H) crypt.h		# funzip only
+	$(CC) -c $(CFLAGS) -DFUNZIP $(OUT)$@ inflate.c
 
-fileio_$(OBJ):	fileio.c $(ZIP_H) crc32.h
-	$(CC) -c -I. $(CCFLAGS) -DUTIL $(OUT)$@ fileio.c
+ttyiof$(OBJ):	ttyio.c $(UNZIP_H) zip.h crypt.h ttyio.h	# funzip only
+	$(CC) -c $(CFLAGS) $(NFLAGS) -DFUNZIP $(OUT)$@ ttyio.c
 
-util_$(OBJ):	util.c $(ZIP_H) os2/os2zip.h
-	$(CC) -c -I. $(CCFLAGS) -DUTIL $(OUT)$@ util.c
+crc32_$(OBJ):	crc32.c $(UNZIP_H) zip.h			# unzipsfx only
+	$(CC) -c $(CFLAGS) -DSFX $(OUT)$@ crc32.c
 
-crc32_$(OBJ):	crc32.c $(ZIP_H) crc32.h
-	$(CC) -c -I. $(CCFLAGS) -DUTIL $(OUT)$@ crc32.c
+crctab_$(OBJ):	crctab.c $(UNZIP_H) zip.h			# unzipsfx only
+	$(CC) -c $(CFLAGS) -DSFX $(OUT)$@ crctab.c
 
-crypt_$(OBJ):	crypt.c $(ZIP_H) crypt.h crc32.h ttyio.h
-	$(CC) -c -I. $(CCFLAGS) -DUTIL $(OUT)$@ crypt.c
+crypt_$(OBJ):	crypt.c $(UNZIP_H) zip.h crypt.h ttyio.h	# unzipsfx only
+	$(CC) -c $(CFLAGS) -DSFX $(OUT)$@ crypt.c
 
-os2zip_$(OBJ):	os2/os2zip.c $(ZIP_H) os2/os2zip.h
-	$(CC) -c -I. $(CCFLAGS) -DUTIL $(OUT)$@ os2$(DIRSEP)os2zip.c
+extract_$(OBJ):	extract.c $(UNZIP_H) crypt.h			# unzipsfx only
+	$(CC) -c $(CFLAGS) -DSFX $(OUT)$@ extract.c
 
-msdos_$(OBJ):	msdos/msdos.c $(ZIP_H)
-	$(CC) -c -I. $(CCFLAGS) -DUTIL $(OUT)$@ msdos$(DIRSEP)msdos.c
+fileio_$(OBJ):	fileio.c $(UNZIP_H) crypt.h ttyio.h ebcdic.h	# unzipsfx only
+	$(CC) -c $(CFLAGS) -DSFX $(OUT)$@ fileio.c
 
-win32_$(OBJ):	win32/win32.c $(ZIP_H) win32/win32zip.h
-	$(CC) -c -I. $(CCFLAGS) -DUTIL $(OUT)$@ win32$(DIRSEP)win32.c
+globals_$(OBJ):	globals.c $(UNZIP_H)				# unzipsfx only
+	$(CC) -c $(CFLAGS) -DSFX $(OUT)$@ globals.c
 
-zip.exe: $(OBJZ) $(OBJ2) $(OBJA)
-	$(CC) $(LDFLAGS)$@ $(DEF) $(OBJZ) $(OBJ2) $(OBJA) $(LDFLAGS2)
+inflate_$(OBJ):	inflate.c inflate.h $(UNZIP_H) crypt.h		# unzipsfx only
+	$(CC) -c $(CFLAGS) -DSFX $(OUT)$@ inflate.c
 
-zipcloak.exe: $(OBJC)
-	$(CC) $(LDFLAGS)$@ $(DEF) $(OBJC) $(LDFLAGS2)
+match_$(OBJ):	match.c $(UNZIP_H)				# unzipsfx only
+	$(CC) -c $(CFLAGS) -DSFX $(OUT)$@ match.c
 
-zipnote.exe: $(OBJN)
-	$(CC) $(LDFLAGS)$@ $(DEF) $(OBJN) $(LDFLAGS2)
+process_$(OBJ):	process.c $(UNZIP_H)				# unzipsfx only
+	$(CC) -c $(CFLAGS) -DSFX $(OUT)$@ process.c
 
-zipsplit.exe: $(OBJS)
-	$(CC) $(LDFLAGS)$@ $(DEF) $(OBJS) $(LDFLAGS2)
+ttyio_$(OBJ):	ttyio.c $(UNZIP_H) zip.h crypt.h ttyio.h	# unzipsfx only
+	$(CC) -c $(CFLAGS) -DSFX $(OUT)$@ ttyio.c
+
+unzipsf_$(OBJ):	unzip.c $(UNZIP_H) crypt.h unzvers.h consts.h	# unzipsfx only
+	$(CC) -c $(CFLAGS) -DSFX $(OUT)$@ unzip.c

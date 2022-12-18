@@ -64,7 +64,6 @@ pipe2= '?',
     '| err: cms | cons',
     '?',
     'err:',
-    '| strip both',
     '| nfind 0'||,
     '| var err',
     '| specs /----> Errors found! RC=/ 1 1-* n',
@@ -77,16 +76,7 @@ if symbol('err') = 'VAR' & err ^= 0 then do
       exit err
 end
 say 'Generating module 'module
-'pipe cms cmod' fn texts' DMSCSL | > 'fn' LINK A'
-'set cmstype ht'
-'state 'fn' LINK A'
-rcc = rc
-'set cmstype rt'
-if rcc = 0 then do
-   say ''
-   say 'ERRORS discovered during linking!'
-   say 'See: 'fn' LINK A for more info'
-end
+'pipe cms cmod' fn texts' | > 'fn' LINK A'
 exit rc
 error:
 say 'Error in REXX detected!'

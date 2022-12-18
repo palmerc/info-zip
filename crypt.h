@@ -1,7 +1,7 @@
 /*
-  Copyright (c) 1990-2007 Info-ZIP.  All rights reserved.
+  Copyright (c) 1990-2004 Info-ZIP.  All rights reserved.
 
-  See the accompanying file LICENSE, version 2007-Mar-4 or later
+  See the accompanying file LICENSE, version 2000-Apr-09 or later
   (the contents of which are also included in zip.h) for terms of use.
   If, for some reason, all these files are missing, the Info-ZIP license
   also may be found at:  ftp://ftp.info-zip.org/pub/infozip/license.html
@@ -9,11 +9,10 @@
 /*
   crypt.h (full version) by Info-ZIP.   Last revised:  [see CR_VERSION_DATE]
 
-  The main encryption/decryption source code for Info-Zip software was
-  originally written in Europe.  To the best of our knowledge, it can
-  be freely distributed in both source and object forms from any country,
-  including the USA under License Exception TSU of the U.S. Export
-  Administration Regulations (section 740.13(e)) of 6 June 2002.
+  This encryption/decryption source code for Info-Zip software was
+  originally written in Europe.  The whole source package can be
+  freely distributed, including from the USA.  (Prior to January 2000,
+  re-export from the US was a violation of US law.)
 
   NOTE on copyright history:
   Previous versions of this source package (up to version 2.8) were
@@ -46,7 +45,7 @@
 #  define CRYPT  1  /* full version */
 #else
 #if !defined(SFX)
-#  define CRYPT  1  /* full version for zip and main unzip */
+#  define CRYPT  1  /* full version for zip and main unzip*/
 #else
 #  define CRYPT  0  /* dummy version for unzip sfx */
 #endif
@@ -61,13 +60,13 @@
 #endif
 
 #define CR_MAJORVER        2
-#define CR_MINORVER        91
+#define CR_MINORVER        9
 #ifdef CR_BETA
-#  define CR_BETA_VER      "c BETA"
-#  define CR_VERSION_DATE  "05 Jan 2007"       /* last real code change */
+#  define CR_BETA_VER      "a BETA"
+#  define CR_VERSION_DATE  "05 May 2000"       /* last real code change */
 #else
 #  define CR_BETA_VER      ""
-#  define CR_VERSION_DATE  "05 Jan 2007"       /* last public release date */
+#  define CR_VERSION_DATE  "05 May 2000"       /* last public release date */
 #  define CR_RELEASE
 #endif
 
@@ -122,6 +121,13 @@
 #define RAND_HEAD_LEN  12       /* length of encryption random header */
 
 /* the crc_32_tab array has to be provided externally for the crypt calculus */
+#ifndef CRC_32_TAB                   /* UnZip provides this in globals.h */
+# if (!defined(USE_ZLIB) || defined(USE_OWN_CRCTAB))
+   extern ZCONST ulg near *crc_32_tab;
+# else
+   extern ZCONST ulg Far *crc_32_tab;
+# endif
+#endif /* !CRC_32_TAB */
 
 /* encode byte c, using temp t.  Warning: c must not have side effects. */
 #define zencode(c,t)  (t=decrypt_byte(__G), update_keys(c), t^(c))
@@ -134,12 +140,12 @@ int  update_keys OF((__GPRO__ int c));
 void init_keys OF((__GPRO__ ZCONST char *passwd));
 
 #ifdef ZIP
-   void crypthead OF((ZCONST char *, ulg));
+   void crypthead OF((ZCONST char *, ulg, FILE *));
 #  ifdef UTIL
-     int zipcloak OF((struct zlist far *, ZCONST char *));
-     int zipbare OF((struct zlist far *, ZCONST char *));
+     int zipcloak OF((struct zlist far *, FILE *, FILE *, ZCONST char *));
+     int zipbare OF((struct zlist far *, FILE *, FILE *, ZCONST char *));
 #  else
-     unsigned zfwrite OF((zvoid *, extent, extent));
+     unsigned zfwrite OF((zvoid *, extent, extent, FILE *));
      extern char *key;
 #  endif
 #endif /* ZIP */
@@ -163,7 +169,7 @@ void init_keys OF((__GPRO__ ZCONST char *passwd));
 #define zencode
 #define zdecode
 
-#define zfwrite(b,s,c) bfwrite(b,s,c,BFWRITE_DATA)
+#define zfwrite  fwrite
 
 #endif /* ?CRYPT */
 #endif /* !__crypt_h */

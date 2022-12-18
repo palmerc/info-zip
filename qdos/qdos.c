@@ -1,38 +1,1080 @@
 /*
-  qdos/qdos.c
+  Copyright (c) 1990-2004 Info-ZIP.  All rights reserved.
 
-  Copyright (c) 1990-2005 Info-ZIP.  All rights reserved.
-
-  See the accompanying file LICENSE, version 2005-Feb-10 or later
-  (the contents of which are also included in zip.h) for terms of use.
-  If, for some reason, all these files are missing, the Info-ZIP license
+  See the accompanying file LICENSE, version 2000-Apr-09 or later
+  (the contents of which are also included in unzip.h) for terms of use.
+  If, for some reason, these files are missing, the Info-ZIP license
   also may be found at:  ftp://ftp.info-zip.org/pub/infozip/license.html
 */
-/*
- * Yes this  file is necessary; the QDOS file system is the most
- * ludicrous known to man (even more so than VMS!).
- */
+/*---------------------------------------------------------------------------
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <dirent.h>
-#include <unistd.h>
+  qdos.c
 
-#include "zip.h"
+  QDOS-specific routines for use with Info-ZIP's UnZip 5.3 and later.
+
+  Contains:  Qstrfix()
+             QFilename()
+             QMatch()
+             chowner()
+             Qgetch()
+             QReturn()
+             LastDir()
+             screensize()
+             do_wild()           <-- generic enough to put in file_io.c?
+             mapattr()
+             mapname()
+             checkdir()
+             qfix()
+             close_outfile()
+             stamp_file()
+             getp()
+             version()
+
+  ---------------------------------------------------------------------------*/
+
+#define UNZIP_INTERNAL
+
+#include "unzip.h"
 #include "crypt.h"
 #include "ttyio.h"
+#include <dirent.h>
+#include "izqdos.h"
+#include "unzvers.h"
+
+#ifndef SFX
+char _prog_name[] = "UnZip";
+#else
+char _prog_name[] = "??Special Flag for unzipsfx hack  ??";
+#endif
+/* sorrid hack at request of GRR follows; hope the compiler stays kind to us */
+char _version[] = {UZ_MAJORVER+'0','.',UZ_MINORVER+'0',UZ_PATCHLEVEL+'0'};
+char _extra[] = " " UZ_BETALEVEL;
+char _copyright[] = "(c) Info-ZIP Group";
+char *  _endmsg = NULL;
+long _stack = 16*1024;         /* huge stack (for qdos) */
+
+extern void consetup_title(chanid_t,struct WINDOWDEF *);
+void (*_consetup)(chanid_t,struct WINDOWDEF *) = consetup_title;
+
+struct WINDOWDEF _condetails =
+{
+    2,
+    1,
+    0,
+    7,
+    500,
+    220,
+    2,
+    30
+};
+
+
+static jobid_t chowner(chanid_t chan)
+{
+    extern char *_sys_var;
+    char *scht;
+    long *cdb;
+    long jid;
+
+    scht = *((char **)(_sys_var + 0x78));
+    cdb = *(long **)((long *)scht  + (chan & 0xffff));
+    jid = *(cdb + 2);
+    return jid;
+}
+
+int QReturn(int err)
+{
+    jobid_t me,you;
+
+    me = getpid();
+    you = chowner(getchid(0));
+
+    if((me == you) && ((qlflag & 4) == 0))
+    {
+        if(isatty(0) && isatty(2) && qlwait)
+        {
+            char c = 0;
+            fputs("Press a key to exit", stderr);
+            if((io_fbyte(getchid(0), qlwait, &c) == 0) && c == 27)
+            {
+                io_fbyte(getchid(0), -1, &c);
+            }
+        }
+    }
+    if(err > 0) err = -err;     /* We like -ve err nos (exclusively, alas) */
+    exit(err);
+}
+
+#ifndef FUNZIP
+
+static int created_dir;        /* used in mapname(), checkdir() */
+static int renamed_fullpath;   /* ditto */
+
+char *Qstrfix (char *p)
+{
+    char *q;
+    for (q = p; (q = strstr(q, ".zip"));)
+    {
+        *q = '_';
+        q += 4;
+    }
+    return p;
+}
+
+void QFilename(char *f)
+{
+    char *o,*p,*q = strdup(f);
+    p = q;
+
+    if(*q == '.' && *(q+1) == '/') q += 2;
+    o = q;
+
+    for(;*q;q++)
+    {
+        if(*q == '/') *q = '_';
+        if((qlflag & 1) == 0)
+        {
+            if(*q == '.') *q = '_';
+        }
+    }
+    strcpy(f,o);
+    free(p);
+}
+
+int QMatch(uch c1, uch c2)
+{
+    int m =0;
+
+    if(c1 != c2)
+    {
+        if(c1 == '_' && (c2 == '.' || c2 == '/'))
+        {
+            m = 1;
+        }
+    }
+    else
+    {
+        m = 1;
+    }
+    return m;
+}
+
+
+int Qgetch(void)
+{
+    char ch;
+
+    if(io_fbyte(getchid(0), -1, &ch) < 0)
+    {
+        return EOF;
+    }
+    else
+    {
+        return (int) ch;
+    }
+}
+
+int screensize(int *tt_rows, int *tt_cols)
+{
+    QLRECT_t rect;
+
+    if(0 == sd_chenq(getchid(1), -1, &rect))
+    {
+        if(tt_cols)
+            *tt_cols = rect.q_width;
+        if(tt_rows)
+            *tt_rows = rect.q_height;
+    }
+    else
+    {
+        if(tt_cols)
+            *tt_cols = 80;
+        if(tt_rows)
+            *tt_rows = 24;
+    }
+    return 0;
+}
+
+
+
+#ifndef SFX
+char *LastDir(char *ws)
+{
+    char *p;
+    char *q = ws;
+    struct stat s;
+
+    for(p = ws; *p; p++)
+    {
+        if(*p == '_')
+        {
+            char c;
+
+            p++;
+            c = *p;
+            *p = 0;
+            if(stat(ws, &s) == 0 && S_ISDIR(s.st_mode))
+            {
+                q = p;
+            }
+            *p = c;
+        }
+    }
+    return q;
+}
+
+
+/**********************/
+/* Function do_wild() */   /* for porting:  dir separator; match(ignore_case) */
+/**********************/
+
+char *do_wild(__G__ wildspec)
+    __GDEF
+    ZCONST char *wildspec;  /* only used first time on a given dir */
+{
+    static DIR *wild_dir = (DIR *)NULL;
+    static ZCONST char *wildname;
+    static char *dirname, matchname[FILNAMSIZ];
+    static int notfirstcall=FALSE, have_dirname, dirnamelen;
+    struct dirent *file;
+    char basedir[40];
+
+    /* Even when we're just returning wildspec, we *always* do so in
+     * matchname[]--calling routine is allowed to append four characters
+     * to the returned string, and wildspec may be a pointer to argv[].
+     */
+    if (!notfirstcall) {    /* first call:  must initialize everything */
+        char *ws = NULL, *us = NULL;
+
+        notfirstcall = TRUE;
+
+        /* break the wildspec into a directory part and a wildcard filename */
+
+        ws = (char *) iswild(wildspec);
+
+        if(ws == NULL)
+        {
+            strcpy(matchname, wildspec);
+            return matchname;
+        }
+
+        us = LastDir(wildspec);
+
+        if(us == wildspec)
+        {
+            dirname = basedir;
+            getcwd(basedir, sizeof(basedir)-1);
+            dirnamelen = strlen(basedir);
+            have_dirname = FALSE;
+            wildname = wildspec;
+        } else {
+            wildname = us;     /* point at character after '/' */
+            dirnamelen = wildname - wildspec;
+            if ((dirname = (char *)malloc(dirnamelen+1)) == (char *)NULL) {
+                Info(slide, 0x201, ((char *)slide,
+                  "warning:  cannot allocate wildcard buffers\n"));
+                strcpy(matchname, wildspec);
+                return matchname;   /* but maybe filespec was not a wildcard */
+            }
+            strncpy(dirname, wildspec, dirnamelen);
+            dirname[dirnamelen] = '\0';   /* terminate for strcpy below */
+            have_dirname = TRUE;
+        }
+
+        if ((wild_dir = opendir(dirname)) != (DIR *)NULL) {
+            while ((file = readdir(wild_dir)) != (struct dirent *)NULL) {
+                if (match(file->d_name, wildname, 2)) {  /* 0 == case sens. */
+                    if (have_dirname) {
+                        strcpy(matchname, dirname);
+                        strcpy(matchname+dirnamelen, file->d_name);
+                    } else
+                        strcpy(matchname, file->d_name);
+                    return matchname;
+                }
+            }
+            /* if we get to here directory is exhausted, so close it */
+            closedir(wild_dir);
+            wild_dir = (DIR *)NULL;
+        }
+
+        /* return the raw wildspec in case that works (e.g., directory not
+         * searchable, but filespec was not wild and file is readable) */
+        strcpy(matchname, wildspec);
+        return matchname;
+    }
+
+    /* last time through, might have failed opendir but returned raw wildspec */
+    if (wild_dir == (DIR *)NULL) {
+        notfirstcall = FALSE; /* nothing left to try--reset for new wildspec */
+        if (have_dirname)
+            free(dirname);
+        return (char *)NULL;
+    }
+
+    /* If we've gotten this far, we've read and matched at least one entry
+     * successfully (in a previous call), so dirname has been copied into
+     * matchname already.
+     */
+    while ((file = readdir(wild_dir)) != (struct dirent *)NULL) {
+        if (match(file->d_name, wildname, 2)) {   /* 0 == don't ignore case */
+            if (have_dirname) {
+                /* strcpy(matchname, dirname); */
+                strcpy(matchname+dirnamelen, file->d_name);
+            } else
+                strcpy(matchname, file->d_name);
+            return matchname;
+        }
+    }
+
+    closedir(wild_dir);     /* have read at least one entry; nothing left */
+    wild_dir = (DIR *)NULL;
+    notfirstcall = FALSE;   /* reset for new wildspec */
+    if (have_dirname)
+        free(dirname);
+    return (char *)NULL;
+
+} /* end function do_wild() */
+
+#endif /* !SFX */
+
+
+
+
+
+/**********************/
+/* Function mapattr() */
+/**********************/
+
+int mapattr(__G)
+    __GDEF
+{
+    ulg tmp = G.crec.external_file_attributes;
+
+    switch (G.pInfo->hostnum) {
+        case AMIGA_:
+            tmp = (unsigned)(tmp>>17 & 7);   /* Amiga RWE bits */
+            G.pInfo->file_attr = (unsigned)(tmp<<6 | tmp<<3 | tmp);
+            break;
+        case THEOS_:
+            tmp &= 0xF1FFFFFFL;
+            if ((tmp & 0xF0000000L) != 0x40000000L)
+                tmp &= 0x01FFFFFFL;     /* not a dir, mask all ftype bits */
+            else
+                tmp &= 0x41FFFFFFL;     /* leave directory bit as set */
+            /* fall through! */
+        case QDOS_:
+        case UNIX_:
+        case VMS_:
+        case ACORN_:
+        case ATARI_:
+        case BEOS_:
+        case TANDEM_:
+            G.pInfo->file_attr = (unsigned)(tmp >> 16);
+            if (G.pInfo->file_attr != 0 || !G.extra_field) {
+                return 0;
+            } else {
+                /* Some (non-Info-ZIP) implementations of Zip for Unix and
+                   VMS (and probably others ??) leave 0 in the upper 16-bit
+                   part of the external_file_attributes field. Instead, they
+                   store file permission attributes in some extra field.
+                   As a work-around, we search for the presence of one of
+                   these extra fields and fall back to the MSDOS compatible
+                   part of external_file_attributes if one of the known
+                   e.f. types has been detected.
+                   Later, we might implement extraction of the permission
+                   bits from the VMS extra field. But for now, the work-around
+                   should be sufficient to provide "readable" extracted files.
+                   (For ASI Unix e.f., an experimental remap of the e.f.
+                   mode value IS already provided!)
+                 */
+                ush ebID;
+                unsigned ebLen;
+                uch *ef = G.extra_field;
+                unsigned ef_len = G.crec.extra_field_length;
+                int r = FALSE;
+
+                while (!r && ef_len >= EB_HEADSIZE) {
+                    ebID = makeword(ef);
+                    ebLen = (unsigned)makeword(ef+EB_LEN);
+                    if (ebLen > (ef_len - EB_HEADSIZE))
+                        /* discoverd some e.f. inconsistency! */
+                        break;
+                    switch (ebID) {
+                      case EF_ASIUNIX:
+                        if (ebLen >= (EB_ASI_MODE+2)) {
+                            G.pInfo->file_attr =
+                              (unsigned)makeword(ef+(EB_HEADSIZE+EB_ASI_MODE));
+                            /* force stop of loop: */
+                            ef_len = (ebLen + EB_HEADSIZE);
+                            break;
+                        }
+                        /* else: fall through! */
+                      case EF_PKVMS:
+                        /* "found nondecypherable e.f. with perm. attr" */
+                        r = TRUE;
+                      default:
+                        break;
+                    }
+                    ef_len -= (ebLen + EB_HEADSIZE);
+                    ef += (ebLen + EB_HEADSIZE);
+                }
+                if (!r)
+                    return 0;
+            }
+            /* fall through! */
+        /* all remaining cases:  expand MSDOS read-only bit into write perms */
+        case FS_FAT_:
+            /* PKWARE's PKZip for Unix marks entries as FS_FAT_, but stores the
+             * Unix attributes in the upper 16 bits of the external attributes
+             * field, just like Info-ZIP's Zip for Unix.  We try to use that
+             * value, after a check for consistency with the MSDOS attribute
+             * bits (see below).
+             */
+            G.pInfo->file_attr = (unsigned)(tmp >> 16);
+            /* fall through! */
+        case FS_HPFS_:
+        case FS_NTFS_:
+        case MAC_:
+        case TOPS20_:
+        default:
+            /* Ensure that DOS subdir bit is set when the entry's name ends
+             * in a '/'.  Some third-party Zip programs fail to set the subdir
+             * bit for directory entries.
+             */
+            if ((tmp & 0x10) == 0) {
+                extent fnlen = strlen(G.filename);
+                if (fnlen > 0 && G.filename[fnlen-1] == '/')
+                    tmp |= 0x10;
+            }
+            /* read-only bit --> write perms; subdir bit --> dir exec bit */
+            tmp = !(tmp & 1) << 1  |  (tmp & 0x10) >> 4;
+            if ((G.pInfo->file_attr & 0700) == (unsigned)(0400 | tmp<<6))
+                /* keep previous G.pInfo->file_attr setting, when its "owner"
+                 * part appears to be consistent with DOS attribute flags!
+                 */
+                return 0;
+            G.pInfo->file_attr = (unsigned)(0444 | tmp<<6 | tmp<<3 | tmp);
+            break;
+    } /* end switch (host-OS-created-by) */
+
+    /* for originating systems with no concept of "group," "other," "system": */
+    umask( (int)(tmp=umask(0)) );    /* apply mask to expanded r/w(/x) perms */
+    G.pInfo->file_attr &= ~tmp;
+
+    return 0;
+
+} /* end function mapattr() */
+
+
+
+/************************/
+/*  Function mapname()  */
+/************************/
+int mapname(__G__ renamed)
+    __GDEF
+    int renamed;
+/*
+ * returns:
+ *  MPN_OK          - no problem detected
+ *  MPN_INF_TRUNC   - caution (truncated filename)
+ *  MPN_INF_SKIP    - info "skip entry" (dir doesn't exist)
+ *  MPN_ERR_SKIP    - error -> skip entry
+ *  MPN_ERR_TOOLONG - error -> path is too long
+ *  MPN_NOMEM       - error (memory allocation failed) -> skip entry
+ *  [also MPN_VOL_LABEL, MPN_CREATED_DIR]
+ */
+{
+    char pathcomp[FILNAMSIZ];      /* path-component buffer */
+    char *pp, *cp=(char *)NULL;    /* character pointers */
+    char *lastsemi=(char *)NULL;   /* pointer to last semi-colon in pathcomp */
+    int killed_ddot = FALSE;       /* is set when skipping "../" pathcomp */
+    int error = MPN_OK;
+    register unsigned workch;      /* hold the character being tested */
+
+
+/*---------------------------------------------------------------------------
+    Initialize various pointers and counters and stuff.
+  ---------------------------------------------------------------------------*/
+
+    if (G.pInfo->vollabel)
+        return MPN_VOL_LABEL;   /* can't set disk volume labels in SMS/QDOS */
+
+    /* can create path as long as not just freshening, or if user told us */
+    G.create_dirs = (!uO.fflag || renamed);
+
+    created_dir = FALSE;        /* not yet */
+
+    /* user gave full pathname:  don't prepend rootpath */
+    renamed_fullpath = (renamed && (*G.filename == '/'));
+
+    if (checkdir(__G__ (char *)NULL, INIT) == MPN_NOMEM)
+        return MPN_NOMEM;       /* initialize path buffer, unless no memory */
+
+    *pathcomp = '\0';           /* initialize translation buffer */
+    pp = pathcomp;              /* point to translation buffer */
+    if (uO.jflag)               /* junking directories */
+        cp = (char *)strrchr(G.filename, '/');
+    if (cp == (char *)NULL)     /* no '/' or not junking dirs */
+        cp = G.filename;        /* point to internal zipfile-member pathname */
+    else
+        ++cp;                   /* point to start of last component of path */
+
+/*---------------------------------------------------------------------------
+    Begin main loop through characters in filename.
+  ---------------------------------------------------------------------------*/
+
+    while ((workch = (uch)*cp++) != 0) {
+
+        switch (workch) {
+            case '/':             /* can assume -j flag not given */
+                *pp = '\0';
+                if (((error = checkdir(__G__ pathcomp, APPEND_DIR))
+                     & MPN_MASK) > MPN_INF_TRUNC)
+                    return error;
+                pp = pathcomp;    /* reset conversion buffer for next piece */
+                lastsemi = (char *)NULL; /* leave direct. semi-colons alone */
+                break;
+
+            case '.':
+                if (pp == pathcomp) {   /* nothing appended yet... */
+                    if (*cp == '/') {   /* don't bother appending "./" to */
+                        ++cp;           /*  the path: skip behind the '/' */
+                        break;
+                    } else if (!uO.ddotflag && *cp == '.' && cp[1] == '/') {
+                        /* "../" dir traversal detected */
+                        cp += 2;        /*  skip over behind the '/' */
+                        killed_ddot = TRUE; /*  set "show message" flag */
+                        break;
+                    }
+                }
+                *pp++ = (((qlflag & 1) == 0) ? '_' : '.');
+                break;
+
+            case ';':             /* VMS version (or DEC-20 attrib?) */
+                lastsemi = pp;
+                *pp++ = ';';      /* keep for now; remove VMS ";##" */
+                break;            /*  later, if requested */
+
+            default:
+                /* allow European characters in filenames: */
+                if (isprint(workch) || (128 <= workch && workch <= 254))
+                    *pp++ = (char)workch;
+        } /* end switch */
+
+    } /* end while loop */
+
+    /* Show warning when stripping insecure "parent dir" path components */
+    if (killed_ddot && QCOND2) {
+        Info(slide, 0, ((char *)slide,
+          "warning:  skipped \"../\" path component(s) in %s\n",
+          FnFilter1(G.filename)));
+        if (!(error & ~MPN_MASK))
+            error = (error & MPN_MASK) | PK_WARN;
+    }
+
+/*---------------------------------------------------------------------------
+    Report if directory was created (and no file to create:  filename ended
+    in '/'), check name to be sure it exists, and combine path and name be-
+    fore exiting.
+  ---------------------------------------------------------------------------*/
+
+    if (G.filename[strlen(G.filename) - 1] == '/') {
+        G.filename[strlen(G.filename) - 1] = '_';
+        checkdir(__G__ G.filename, GETPATH);
+        if (created_dir) {
+            if (QCOND2) {
+                Info(slide, 0, ((char *)slide, "   creating: %s\n",
+                  FnFilter1(G.filename)));
+            }
+            /* set dir time (note trailing '/') */
+            return (error & ~MPN_MASK) | MPN_CREATED_DIR;
+        }
+        /* dir existed already; don't look for data to extract */
+        return (error & ~MPN_MASK) | MPN_INF_SKIP;
+    }
+
+    *pp = '\0';                   /* done with pathcomp:  terminate it */
+
+    /* if not saving them, remove VMS version numbers (appended ";###") */
+    if (!uO.V_flag && lastsemi) {
+        pp = lastsemi + 1;
+        while (isdigit((uch)(*pp)))
+            ++pp;
+        if (*pp == '\0')          /* only digits between ';' and end:  nuke */
+            *lastsemi = '\0';
+    }
+
+    if (*pathcomp == '\0') {
+        Info(slide, 1, ((char *)slide, "mapname:  conversion of %s failed\n",
+          FnFilter1(G.filename)));
+        return (error & ~MPN_MASK) | MPN_ERR_SKIP;
+    }
+
+    checkdir(__G__ pathcomp, APPEND_NAME);  /* returns 1 if truncated: care? */
+    checkdir(__G__ G.filename, GETPATH);
+
+    return error;
+
+} /* end function mapname() */
+
+
+
+
+/***********************/
+/* Function checkdir() */
+/***********************/
+
+int checkdir(__G__ pathcomp, flag)
+    __GDEF
+    char *pathcomp;
+    int flag;
+/*
+ * returns:
+ *  MPN_OK          - no problem detected
+ *  MPN_INF_TRUNC   - (on APPEND_NAME) truncated filename
+ *  MPN_INF_SKIP    - path doesn't exist, not allowed to create
+ *  MPN_ERR_SKIP    - path doesn't exist, tried to create and failed; or path
+ *                    exists and is not a directory, but is supposed to be
+ *  MPN_ERR_TOOLONG - path is too long
+ *  MPN_NOMEM       - can't allocate memory for filename buffers
+ */
+{
+    static int rootlen = 0;   /* length of rootpath */
+    static char *rootpath;    /* user's "extract-to" directory */
+    static char *buildpath;   /* full path (so far) to extracted file */
+    static char *end;         /* pointer to end of buildpath ('\0') */
+
+#   define FN_MASK   7
+#   define FUNCTION  (flag & FN_MASK)
+
+
+/*---------------------------------------------------------------------------
+    APPEND_DIR:  append the path component to the path being built and check
+    for its existence.  If doesn't exist and we are creating directories, do
+    so for this one; else signal success or error as appropriate.
+  ---------------------------------------------------------------------------*/
+
+    if (FUNCTION == APPEND_DIR) {
+        int too_long = FALSE;
+#ifdef SHORT_NAMES
+        char *old_end = end;
+#endif
+
+        Trace((stderr, "appending dir segment [%s]\n", FnFilter1(pathcomp)));
+        while ((*end = *pathcomp++) != '\0')
+            ++end;
+#ifdef SHORT_NAMES   /* path components restricted to 14 chars, typically */
+        if ((end-old_end) > FILENAME_MAX)  /* GRR:  proper constant? */
+            *(end = old_end + FILENAME_MAX) = '\0';
+#endif
+
+        /* GRR:  could do better check, see if overrunning buffer as we go:
+         * check end-buildpath after each append, set warning variable if
+         * within 20 of FILNAMSIZ; then if var set, do careful check when
+         * appending.  Clear variable when begin new path. */
+
+        if ((end-buildpath) > FILNAMSIZ-2)  /* need '/', one-char name, '\0' */
+            too_long = TRUE;                /* check if extracting directory? */
+        if (stat(buildpath, &G.statbuf)) {  /* path doesn't exist */
+            if (!G.create_dirs) { /* told not to create (freshening) */
+                free(buildpath);
+                return MPN_INF_SKIP;    /* path doesn't exist: nothing to do */
+            }
+            if (too_long) {
+                Info(slide, 1, ((char *)slide,
+                  "checkdir error:  path too long: %s\n",
+                  FnFilter1(buildpath)));
+                free(buildpath);
+                /* no room for filenames:  fatal */
+                return MPN_ERR_TOOLONG;
+            }
+            if (mkdir(buildpath, 0777) == -1) {   /* create the directory */
+                Info(slide, 1, ((char *)slide,
+                  "checkdir error:  cannot create %s\n\
+                 unable to process %s.\n",
+                  FnFilter2(buildpath), FnFilter1(G.filename)));
+                free(buildpath);
+                /* path didn't exist, tried to create, failed */
+                return MPN_ERR_SKIP;
+            }
+            created_dir = TRUE;
+        } else if (!S_ISDIR(G.statbuf.st_mode)) {
+            Info(slide, 1, ((char *)slide,
+              "checkdir error:  %s exists but is not directory\n\
+                 unable to process %s.\n",
+              FnFilter2(buildpath), FnFilter1(G.filename)));
+            free(buildpath);
+            /* path existed but wasn't dir */
+            return MPN_ERR_SKIP;
+        }
+        if (too_long) {
+            Info(slide, 1, ((char *)slide,
+              "checkdir error:  path too long: %s\n", FnFilter1(buildpath)));
+            free(buildpath);
+            /* no room for filenames:  fatal */
+            return MPN_ERR_TOOLONG;
+        }
+        *end++ = '_';
+        *end = '\0';
+        Trace((stderr, "buildpath now = [%s]\n", FnFilter1(buildpath)));
+        return MPN_OK;
+
+    } /* end if (FUNCTION == APPEND_DIR) */
+
+/*---------------------------------------------------------------------------
+    GETPATH:  copy full path to the string pointed at by pathcomp, and free
+    buildpath.
+  ---------------------------------------------------------------------------*/
+
+    if (FUNCTION == GETPATH) {
+        strcpy(pathcomp, buildpath);
+        Trace((stderr, "getting and freeing path [%s]\n",
+          FnFilter1(pathcomp)));
+        free(buildpath);
+        buildpath = end = (char *)NULL;
+        return MPN_OK;
+    }
+
+/*---------------------------------------------------------------------------
+    APPEND_NAME:  assume the path component is the filename; append it and
+    return without checking for existence.
+  ---------------------------------------------------------------------------*/
+
+    if (FUNCTION == APPEND_NAME) {
+#ifdef SHORT_NAMES
+        char *old_end = end;
+#endif
+        short dlen;
+
+        Trace((stderr, "appending filename [%s]\n", FnFilter1(pathcomp)));
+        while ((*end = *pathcomp++) != '\0') {
+            ++end;
+#ifdef SHORT_NAMES  /* truncate name at 14 characters, typically */
+            if ((end-old_end) > FILENAME_MAX)      /* GRR:  proper constant? */
+                *(end = old_end + FILENAME_MAX) = '\0';
+#endif
+            if (isdirdev(buildpath))
+            {
+                dlen = 5;
+            }
+            else
+            {
+                dlen = 0;
+            }
+
+            if ((end-buildpath-dlen) >= FILNAMSIZ) {
+                *--end = '\0';
+                Info(slide, 0x201, ((char *)slide,
+                  "checkdir warning:  path too long; truncating\n\
+                   %s\n                -> %s\n",
+                  FnFilter1(G.filename), FnFilter2(buildpath)));
+                return MPN_INF_TRUNC;   /* filename truncated */
+            }
+        }
+        Trace((stderr, "buildpath now = [%s]\n", FnFilter1(buildpath)));
+        /* could check for existence here, prompt for new name... */
+        return MPN_OK;
+    }
+
+/*---------------------------------------------------------------------------
+    INIT:  allocate and initialize buffer space for the file currently being
+    extracted.  If file was renamed with an absolute path, don't prepend the
+    extract-to path.
+  ---------------------------------------------------------------------------*/
+
+/* GRR:  for VMS and TOPS-20, add up to 13 to strlen */
+
+    if (FUNCTION == INIT) {
+        Trace((stderr, "initializing buildpath to "));
+        if ((buildpath = (char *)malloc(strlen(G.filename)+rootlen+1))
+            == (char *)NULL)
+            return MPN_NOMEM;
+        if ((rootlen > 0) && !renamed_fullpath) {
+            strcpy(buildpath, rootpath);
+            end = buildpath + rootlen;
+        } else {
+            *buildpath = '\0';
+            end = buildpath;
+        }
+        Trace((stderr, "[%s]\n", FnFilter1(buildpath)));
+        return MPN_OK;
+    }
+
+/*---------------------------------------------------------------------------
+    ROOT:  if appropriate, store the path in rootpath and create it if
+    necessary; else assume it's a zipfile member and return.  This path
+    segment gets used in extracting all members from every zipfile specified
+    on the command line.
+  ---------------------------------------------------------------------------*/
+
+#if (!defined(SFX) || defined(SFX_EXDIR))
+    if (FUNCTION == ROOT) {
+        Trace((stderr, "initializing root path to [%s]\n",
+          FnFilter1(pathcomp)));
+        if (pathcomp == (char *)NULL) {
+            rootlen = 0;
+            return MPN_OK;
+        }
+        if (rootlen > 0)        /* rootpath was already set, nothing to do */
+            return MPN_OK;
+        if ((rootlen = strlen(pathcomp)) > 0) {
+            char *tmproot;
+
+            if ((tmproot = (char *)malloc(rootlen+2)) == (char *)NULL) {
+                rootlen = 0;
+                return MPN_NOMEM;
+            }
+            strcpy(tmproot, pathcomp);
+            if ((stat(tmproot, &G.statbuf) ||
+                !S_ISDIR(G.statbuf.st_mode)))
+            {   /* path does not exist */
+                if (!G.create_dirs /* || iswild(tmproot) */ ) {
+                    free(tmproot);
+                    rootlen = 0;
+                    /* skip (or treat as stored file) */
+                    return MPN_INF_SKIP;
+                }
+                /* create the directory (could add loop here scanning tmproot
+                 * to create more than one level, but why really necessary?) */
+                if (mkdir(tmproot, 0777) == -1) {
+                    Info(slide, 1, ((char *)slide,
+                      "checkdir:  cannot create extraction directory: %s\n",
+                      FnFilter1(tmproot)));
+                    free(tmproot);
+                    rootlen = 0;
+                    /* path didn't exist, tried to create, and failed: */
+                    /* file exists, or 2+ subdir levels required */
+                    return MPN_ERR_SKIP;
+                }
+            }
+            if (tmproot[rootlen-1] == '/' || tmproot[rootlen-1] == '_') {
+                tmproot[--rootlen] = '\0';
+            }
+            tmproot[rootlen++] = '_';
+            tmproot[rootlen] = '\0';
+            if ((rootpath = (char *)realloc(tmproot, rootlen+1)) == NULL) {
+                free(tmproot);
+                rootlen = 0;
+                return MPN_NOMEM;
+            }
+        }
+        Trace((stderr, "rootpath now = [%s]\n", FnFilter1(rootpath)));
+        return MPN_OK;
+    }
+#endif /* !SFX || SFX_EXDIR */
+
+/*---------------------------------------------------------------------------
+    END:  free rootpath, immediately prior to program exit.
+  ---------------------------------------------------------------------------*/
+
+    if (FUNCTION == END) {
+        Trace((stderr, "freeing rootpath\n"));
+        if (rootlen > 0) {
+            free(rootpath);
+            rootlen = 0;
+        }
+        return MPN_OK;
+    }
+
+    return MPN_INVALID; /* should never reach */
+
+} /* end function checkdir() */
+
+
+static void qfix(__G__ ef_ptr, ef_len)
+    __GDEF
+    uch *ef_ptr;
+    unsigned ef_len;
+{
+    qdosextra qextra;
+
+    while (ef_len >= EB_HEADSIZE)
+    {
+        qdosextra   *extra = &qextra;
+        jbextra     *jbp   = (jbextra *)&qextra;
+        unsigned    eb_len = makeword(EB_LEN + ef_ptr);
+
+        if (eb_len > (ef_len - EB_HEADSIZE)) {
+            /* discovered some extra field inconsistency! */
+            Trace((stderr,
+              "qfix: block length %u > rest ef_size %u\n", eb_len,
+              ef_len - EB_HEADSIZE));
+            break;
+        }
+
+        /* Must ensure that we don't use ODD addresses here */
+
+        memcpy(&qextra, ef_ptr, sizeof(qdosextra));
+        switch (extra->shortid) {
+          case SHORTID:
+            if (!strncmp(extra->longid, LONGID, strlen(LONGID)))
+            {
+                if (eb_len != EXTRALEN)
+                    fputs("warning: invalid length in Qdos field", stderr);
+                if (extra->header.d_type)
+                {
+                    fs_heads(fgetchid(G.outfile), (timeout_t)-1,
+                             &extra->header, 14);
+                    G.pInfo->file_attr |= S_IXUSR;
+                }
+            }
+
+            if (!strncmp(jbp->longid, JBLONGID, strlen(JBLONGID)))
+            {
+                if (eb_len != JBEXTRALEN)
+                    fputs("warning: invalid length in QZ field", stderr);
+                if (jbp->header.d_type)
+                {
+                    fs_heads(fgetchid(G.outfile), (timeout_t)-1,
+                             &jbp->header, 14);
+                    G.pInfo->file_attr |= S_IXUSR;
+                }
+            }
+            break;
+
+          default:
+            Trace((stderr,"qfix: unknown extra field block, ID=%d\n",
+               extra->shortid));
+            break;
+        }
+
+        /* Skip this extra field block */
+        ef_ptr += (eb_len + EB_HEADSIZE);
+        ef_len -= (eb_len + EB_HEADSIZE);
+    }
+}
+
 
 #ifdef QDOS
+#  include <utime.h>
+   long timezone = 0;
+#endif
 
-# include <qdos.h>
+
+/****************************/
+/* Function close_outfile() */
+/****************************/
+
+void close_outfile(__G)
+    __GDEF
+{
+    union {
+        iztimes t3;             /* mtime, atime, ctime */
+        struct utimbuf t2;      /* modtime, actime */
+    } zt;
+#ifdef USE_EF_UT_TIME
+    unsigned eb_izux_flg;
+#endif
+
+    if (G.extra_field) {
+        qfix(__G__ G.extra_field, G.lrec.extra_field_length);
+    }
+
+    fclose(G.outfile);
+
+/*---------------------------------------------------------------------------
+    Change the file permissions from default ones to those stored in the
+    zipfile.
+  ---------------------------------------------------------------------------*/
+
+#ifndef NO_CHMOD
+    if (chmod(G.filename, 0xffff & G.pInfo->file_attr))
+        perror("chmod (file attributes) error");
+#endif
+
+/*---------------------------------------------------------------------------
+    Convert from MSDOS-format local time and date to Unix-format 32-bit GMT
+    time:  adjust base year from 1980 to 1970, do usual conversions from
+    yy/mm/dd hh:mm:ss to elapsed seconds, and account for timezone and day-
+    light savings time differences.  If we have a Unix extra field, however,
+    we're laughing:  both mtime and atime are ours.
+  ---------------------------------------------------------------------------*/
+
+#ifdef USE_EF_UT_TIME
+    eb_izux_flg = (G.extra_field ? ef_scan_for_izux(G.extra_field,
+                   G.lrec.extra_field_length, 0, G.lrec.last_mod_dos_datetime,
+#ifdef IZ_CHECK_TZ
+                   (G.tz_is_valid ? &(zt.t3) : NULL),
+#else
+                   &(zt.t3),
+#endif
+                   z_uidgid) : 0);
+    if (eb_izux_flg & EB_UT_FL_MTIME) {
+        TTrace((stderr, "\nclose_outfile:  Unix e.f. modif. time = %ld\n",
+          zt.t3.mtime));
+    } else {
+        zt.t3.mtime = dos_to_unix_time(G.lrec.last_mod_dos_datetime);
+    }
+    if (eb_izux_flg & EB_UT_FL_ATIME) {
+        TTrace((stderr, "close_outfile:  Unix e.f. access time = %ld\n",
+          zt.t3.atime));
+    } else {
+        zt.t3.atime = zt.t3.mtime;
+        TTrace((stderr, "\nclose_outfile:  modification/access times = %ld\n",
+          zt.t3.mtime));
+    }
+#else
+    zt.t3.atime = zt.t3.mtime = dos_to_unix_time(G.lrec.last_mod_dos_datetime);
+#endif
+
+    /* set the file's access and modification times */
+    if (utime(G.filename, &(zt.t2))) {
+        Info(slide, 0x201, ((char *)slide,
+          "warning:  cannot set the time for %s\n", FnFilter1(G.filename)));
+    }
+
+} /* end function close_outfile() */
+
+
+
+
+#ifdef TIMESTAMP
+
+/***************************/
+/*  Function stamp_file()  */
+/***************************/
+
+int stamp_file(fname, modtime)
+    ZCONST char *fname;
+    time_t modtime;
+{
+    struct utimbuf tp;
+
+    tp.modtime = tp.actime = modtime;
+    return (utime(fname, &tp));
+
+} /* end function stamp_file() */
+
+#endif /* TIMESTAMP */
+
+
+
+
+#ifndef SFX
+
+/************************/
+/*  Function version()  */
+/************************/
+
+void version(__G)
+    __GDEF
+{
+
+    sprintf((char *)slide, LoadFarString(CompiledWith),
+           "c68", " v4.2x", "SMS/QDOS",
+            " on ", __DATE__, "","");
+    (*G.message)((zvoid *)&G, slide, (ulg)strlen((char *)slide), 0);
+
+} /* end function version() */
+
+#endif /* !SFX */
+#endif /* !FUNZIP */
 
 #if CRYPT
 
-char *getp(m, p, n)
-    ZCONST char *m;              /* prompt for password */
+char *getp(__G__ m, p, n)
+    __GDEF
+    const char *m;              /* prompt for password */
     char *p;                    /* return value: line input */
     int n;                      /* bytes available in p[] */
 {
@@ -73,807 +1115,3 @@ char *getp(m, p, n)
 } /* end function getp() */
 
 #endif /* CRYPT */
-
-
-#define __attribute__(p)
-
-int newname(char *, int, int);
-
-#else /* !QDOS */
-#define QDOS_FLMAX 36
-
-short qlflag = 0;
-
-struct qdirect  {
-    long            d_length __attribute__ ((packed));  /* file length */
-    unsigned char   d_access __attribute__ ((packed));  /* file access type */
-    unsigned char   d_type __attribute__ ((packed));    /* file type */
-    long            d_datalen __attribute__ ((packed)); /* data length */
-    long            d_reserved __attribute__ ((packed));/* Unused */
-    short           d_szname __attribute__ ((packed));  /* size of name */
-    char            d_name[QDOS_FLMAX] __attribute__ ((packed));/* name area */
-    long            d_update __attribute__ ((packed));  /* last update */
-    long            d_refdate __attribute__ ((packed));
-    long            d_backup __attribute__ ((packed));   /* EOD */
-    } ;
-#endif /* ?QDOS */
-
-#define SHORTID 0x4afb          /* in big-endian order !! */
-#define LONGID  "QDOS02"
-#define EXTRALEN (sizeof(struct qdirect) + 8)
-
-typedef struct
-{
-    unsigned short shortid __attribute__ ((packed));
-    struct
-    {
-        unsigned char lo __attribute__ ((packed));
-        unsigned char hi __attribute__ ((packed));
-    } len __attribute__ ((packed));
-    char        longid[8] __attribute__ ((packed));
-    struct      qdirect     header __attribute__ ((packed));
-} qdosextra;
-
-#ifdef USE_EF_UT_TIME
-local int GetExtraTime(struct zlist far *z, iztimes *z_utim, unsigned ut_flg);
-#endif
-
-#ifdef QDOS
-
-#define rev_short(x) (x)
-#define rev_long(x) (x)
-
-char _prog_name[] = "zip";
-char _copyright[] = "(c) Info-ZIP Group";
-long _stack = 16*1024;
-char *  _endmsg = NULL;
-
-extern void consetup_title(chanid_t,struct WINDOWDEF *);
-void (*_consetup)(chanid_t,struct WINDOWDEF *) = consetup_title;
-
-struct WINDOWDEF _condetails =
-{
-    2,
-    1,
-    0,
-    7,
-    500,
-    220,
-    2,
-    30
-};
-
-extern short qlwait;
-extern short dtype;
-
-#define CHECKDIR(p1) (((p1).d_type == dtype) && (((p1).d_length % 64) == 0))
-
-char * stpcpy (char *d, ZCONST char *s)
-{
-    while(*d++ = *s++)
-        ; /* Null loop */
-    return d-1;
-}
-
-static jobid_t chowner(chanid_t chan)
-{
-    extern char *_sys_var;
-    char *scht;
-    long *cdb;
-    long jid;
-
-    scht = *((char **)(_sys_var + 0x78));
-    cdb = *(long **)((long *)scht  + (chan & 0xffff));
-    jid = *(cdb + 2);
-    return jid;
-}
-
-void QDOSexit(void)
-{
-    jobid_t me,you;
-
-    me = getpid();
-    you = chowner(getchid(0));
-
-    if((me == you) && ((qlflag & 4) == 0))
-    {
-        if(isatty(0) && isatty(2) && qlwait)
-        {
-            char c = 0;
-            fputs("Press a key to exit", stderr);
-            if((io_fbyte(getchid(0), qlwait, &c) == 0) && c == 27)
-            {
-                io_fbyte(getchid(0), -1, &c);
-            }
-        }
-    }
-    exit(ZE_OK);
-}
-
-/* Access seems to be *always* broken in c68 */
-/* Not accurate, just works */
-
-int access (char *f, int mode)
-{
-    struct stat st;
-    int fd;
-
-    if((fd = stat(f, &st)) == 0)
-    {
-        switch(fd)
-        {
-        case F_OK:
-            break;
-        case R_OK:
-            fd = (st.st_mode & 0444) == 0;
-            break;
-        case W_OK:
-            fd = (st.st_mode & 0222) == 0;
-            break;
-        case X_OK:
-            fd = (st.st_mode & 0111) == 0;
-            break;
-        default:
-            fd = -1;
-            break;
-        }
-    }
-    return fd;
-}
-
-/* Fixup a Mickey Mouse file naming system */
-
-char * Unix2ql (char *qlname, char **dot)
-{
-    static char path[64];
-    char name[64];
-    char *q, *r, *s;
-
-    strcpy(name, qlname);
-    if(*name == '~')
-    {
-        r = name+1;
-        getcwd(path, sizeof(path));
-        q = path + strlen(path);
-        if(*(q-1) != '_')
-        {
-            *q++ = '_';
-        }
-    }
-    else
-    {
-        q = path;
-        r = name;
-    }
-
-    if(*r == '/')
-    {
-        r++;
-    }
-
-    strcpy(q, r);
-
-    while (*q)
-    {
-        if(*q == '/' || *q == '.')
-        {
-            if(*q == '.' && dot)
-            {
-                *dot = name + (q - path);
-            }
-            *q = '_';
-        }
-
-        q++;
-    }
-    return path;
-}
-
-#if 0                                 /* Not used in ZIP */
-
-GuessAltName(char *name, char *dot)
-{
-    if(dot)
-    {
-        *dot = '.';
-    }
-    else
-    {
-        if((dot = strrchr(name, '_')))
-        {
-            *dot = '.';
-        }
-    }
-}
-
-#endif /* 0 */
-
-short devlen(char *p)
-{
-    char defpath[40];
-    short deflen = 0, ok = 0;
-
-    getcwd(defpath, sizeof(defpath));
-    deflen = strlen(defpath);
-    if(deflen)
-    {
-        if(strnicmp(p, defpath, deflen) == 0)
-        {
-            ok = 1;
-        }
-    }
-
-    if(!ok)
-    {
-        if(isdirdev(p))
-        {
-            deflen = 5;
-        }
-        else
-        {
-            deflen = 0;
-        }
-    }
-    return deflen;
-}
-
-char * ql2Unix (char *qlname)
-{
-    struct stat st;
-    int sts;
-    char *p, *r, *s, *ldp;
-    char *pnam = NULL;
-    static char path[64];
-    short  deflen;
-    char name[64];
-
-    strcpy(name, qlname);
-    strcpy(path, name);
-
-    deflen = devlen(qlname);
-
-    p = name + deflen;
-    pnam = path + deflen;
-
-    if(s = strrchr(p, '_'))
-    {
-        *s = 0;
-        sts = stat(name, &st);
-        if(deflen && sts ==0 && (st.st_mode & S_IFDIR))
-        {
-            *(path+(s-name)) = '/';
-        }
-        else
-        {
-            *(path+(s-name)) = '.';
-        }
-    }
-
-    ldp = p;
-    for(r = p; *r; r++)
-    {
-        if(r != ldp && *r == '_')
-        {
-            *r = 0;
-            if(deflen)
-            {
-                sts = stat(name, &st);
-            }
-            else
-                sts = -1;
-
-            if(sts ==0 && (st.st_mode & S_IFDIR))
-            {
-                *(path+(r-name)) = '/';
-                ldp = r + 1;
-            }
-            else
-            {
-                *(path+(r-name)) = '_';
-            }
-            *r = '_';
-        }
-    }
-    return pnam;
-}
-
-char *LastDir(char *ws)
-{
-    char *p;
-    char *q = ws;
-    struct stat s;
-
-    for(p = ws; *p; p++)
-    {
-        if(p != ws && *p == '_')
-        {
-            char c;
-
-            p++;
-            c = *p;
-            *p = 0;
-            if(stat(ws, &s) == 0 && S_ISDIR(s.st_mode))
-            {
-                q = p;
-            }
-            *p = c;
-        }
-    }
-    return q;
-}
-
-# ifndef UTIL
-
-static int add_dir(char * dnam)
-{
-    int e = ZE_OK;
-    char *p;
-    short nlen;
-
-    nlen = strlen(dnam);
-    if(p = malloc(nlen + 2))
-    {
-        strncpy (p, dnam, nlen);
-        if(*(p+nlen) != '_')
-        {
-            *(p+nlen) = '_';
-            *(p+nlen+1) = '\0';
-        }
-        if ((e = newname(p, 1, 0)) != ZE_OK)
-        {
-                free(p);
-        }
-    }
-    else
-    {
-        e = ZE_MEM;
-    }
-    return e;
-}
-
-int qlwild (char *dnam, short dorecurse, short l)
-{
-    static char match[40] = {0};
-    static char ddev[8] =  {0};
-    static short nc;
-    static short llen;
-    static char base[40];
-
-    int chid;
-    struct qdirect qd;
-    char *dp;
-    int e = ZE_MISS;
-
-    if (l == 0)
-    {
-        nc = 0;
-        *base = '\0';
-        if (isdirdev (dnam))
-        {
-            dp = dnam;
-            strncpy (ddev, dnam, 5);
-        }
-        else
-        {
-
-            char *p;
-            char temp[40];
-
-            getcwd (temp, 40);
-
-            llen = strlen(temp);
-            p = (temp + llen - 1);
-            if (*p != '_')
-            {
-                *p++ = '_';
-                *p = 0;
-            }
-
-            strncpy (ddev, temp, 5);
-            dp = base;
-            p = stpcpy (dp, temp);
-            strcpy (p, dnam);
-        }
-
-        {
-            char *q = isshexp (dp);
-            if(q)
-            {
-                strcpy (match, dp + 5);
-                if (q)
-                {
-                    while (q != dp && *q != '_')
-                    {
-                        q--;
-                    }
-                    *(++q) = '\0';
-                }
-            }
-            else
-            {
-                struct stat s;
-                if (stat(dp, &s) == 0)
-                {
-                    if (!(s.st_mode & S_IFDIR))
-                    {
-                        return procname(dp, 0);
-                    }
-                }
-                else
-                {
-                    return ZE_MISS;  /* woops, no wildcards! */
-                }
-            }
-
-        }
-    }
-    else
-    {
-        dp = dnam;
-    }
-
-    if ((chid = io_open (dp, 4L)) > 0)
-    {
-        int id = 0;
-        while (io_fstrg (chid, -1, &qd, 64) > 0)
-        {
-            short j;
-
-            if (qd.d_szname)
-            {
-                if (CHECKDIR(qd))
-                {
-                    if(dorecurse)
-                    {
-                        char fnam[256], *p;
-
-                        p = stpcpy (fnam, ddev);
-                        strncpy (p, qd.d_name, qd.d_szname);
-                        *(p + qd.d_szname) = 0;
-                        e = qlwild (fnam, dorecurse, l+1);
-                    }
-                    else
-                    {
-                        continue;
-                    }
-                }
-                else
-                {
-                    char nam[48];
-                    strcpy(nam, ddev);
-
-                    strncpy (nam + 5, qd.d_name, qd.d_szname);
-                    *(nam + 5 + qd.d_szname) = 0;
-
-                    if (MATCH (match, nam + 5, 0) == 1)
-                    {
-                        if(dirnames && l && id == 0)
-                        {
-                            id = 1;
-                            if((e = add_dir(dp)) != ZE_OK)
-                            {
-                                return e;
-                            }
-                        }
-
-                        if((e = procname(nam, 0)) == ZE_OK)
-                        {
-                            nc++;
-                        }
-                    }
-                }
-            }
-        }
-        io_close (chid);
-    }
-
-    if (l == 0)
-    {
-        *ddev = 0;
-        *match = 0;
-        e = (nc) ? ZE_OK : ZE_MISS;
-    }
-    return e;
-
-}
-
-int wild(char *p)
-{
-    return qlwild(p, recurse, 0);
-}
-# endif /* !UTIL */
-
-/*
- * Return QDOS error, 0 if exec 1 if found but not exe or rel
- */
-int qlstat(char *name, struct qdirect *qs, char *flag)
-{
-    int r;
-    r = qstat(name, qs);
-    if(r == 0)
-    {
-        if(qs->d_type == 0)
-        {
-            r = 1;
-        }
-        else if(CHECKDIR(*qs))
-        {
-            r = 255;
-        }
-    }
-    return r;
-}
-
-#else /* !QDOS */
-
-long rev_long (ulg l)
-{
-    uch cc[4];
-    cc[0] = (uch)(l >> 24);
-    cc[1] = (uch)((l >> 16) & 0xff);
-    cc[2] = (uch)((l >> 8) & 0xff);
-    cc[3] = (uch)(l & 0xff);
-    return *(ulg *)cc;
-}
-
-short rev_short (ush s)
-{
-    uch cc[2];
-    cc[0] = (uch)((s >> 8) & 0xff);
-    cc[1] = (uch)(s & 0xff);
-    return *(ush *)cc;
-}
-
-#define O_BINARY 0
-
-int qlstat(char *name, struct qdirect *qs, char *flag)
-{
-    int r = -1;
-    int n, fd;
-    struct stat s;
-    struct _ntc_
-    {
-        long id;
-        long dlen;
-    } ntc;
-
-    *flag = 0;
-    if((fd = open(name, O_RDONLY | O_BINARY)) > 0)
-    {
-        short nl;
-
-        fstat(fd, &s);
-        lseek(fd, -8, SEEK_END);
-        read(fd, &ntc, 8);
-        qs->d_length = rev_long(s.st_size);
-        qs->d_update = rev_long(s.st_ctime + 283996800);
-
-        nl = strlen(name);
-        if(nl > QDOS_FLMAX)
-        {
-            nl = QDOS_FLMAX;
-            *flag = 1;
-        }
-        qs->d_szname = rev_short(nl);
-        memcpy(qs->d_name, name, nl);
-
-        if(ntc.id == *(long *)"XTcc")
-        {
-            qs->d_datalen = ntc.dlen;    /* This is big endian */
-            qs->d_type = 1;
-            r = 0;
-        }
-        else
-        {
-            qs->d_type = 0;
-            qs->d_datalen = 0;
-            r = 1;
-        }
-        close(fd);
-        return r;
-    }
-    else
-    {
-        fprintf(stderr, "Fails %d\n", fd);
-        return r;
-    }
-}
-
-#endif /* ?QDOS */
-
-#ifdef USE_EF_UT_TIME
-
-#define EB_L_UT_SIZE    (EB_HEADSIZE + eb_l_ut_len)
-#define EB_C_UT_SIZE    (EB_HEADSIZE + eb_c_ut_len)
-
-#ifdef UNIX
-#define EB_L_UX2_SIZE     (EB_HEADSIZE + EB_UX2_MINLEN)
-#define EB_C_UX2_SIZE     EB_HEADSIZE
-#define EF_L_UT_UX2_SIZE  (EB_L_UT_SIZE + EB_L_UX2_SIZE)
-#define EF_C_UT_UX2_SIZE  (EB_C_UT_SIZE + EB_C_UX2_SIZE)
-#else
-#define EF_L_UT_UX2_SIZE  EB_L_UT_SIZE
-#define EF_C_UT_UX2_SIZE  EB_C_UT_SIZE
-#endif
-
-local int GetExtraTime(struct zlist far *z, iztimes *z_utim, unsigned ut_flg)
-{
-  char *eb_l_ptr;
-  char *eb_c_ptr;
-  char *eb_pt;
-  extent eb_l_ut_len = 0;
-  extent eb_c_ut_len = 0;
-
-#ifdef UNIX
-  struct stat s;
-
-  /* For the full sized UT local field including the UID/GID fields, we
-   * have to stat the file, again.  */
-  if (stat(z->name, &s))
-    return ZE_OPEN;
-  /* update times in z_utim, stat() call might have changed atime... */
-  z_utim->mtime = s.st_mtime;
-  z_utim->atime = s.st_atime;
-  z_utim->ctime = s.st_mtime;   /* best guess (st_ctime != creation time) */
-#endif /* UNIX */
-
-#ifdef IZ_CHECK_TZ
-  if (!zp_tz_is_valid)
-    ut_flg = 0;          /* disable UT e.f creation if no valid TZ info */
-#endif
-  if (ut_flg != 0) {
-    if (ut_flg & EB_UT_FL_MTIME)
-      eb_l_ut_len = eb_c_ut_len = 1;
-    if (ut_flg & EB_UT_FL_ATIME)
-      eb_l_ut_len++;
-    if (ut_flg & EB_UT_FL_CTIME)
-      eb_l_ut_len++;
-
-    eb_l_ut_len = EB_UT_LEN(eb_l_ut_len);
-    eb_c_ut_len = EB_UT_LEN(eb_c_ut_len);
-  }
-
-  if (EF_L_UT_UX2_SIZE > EB_HEADSIZE) {
-    if(z->ext)
-      eb_l_ptr = realloc(z->extra, (z->ext + EF_L_UT_UX2_SIZE));
-    else
-      eb_l_ptr = malloc(EF_L_UT_UX2_SIZE);
-
-    if (eb_l_ptr == NULL)
-      return ZE_MEM;
-
-    if(z->cext)
-      eb_c_ptr = realloc(z->cextra, (z->cext + EF_C_UT_UX2_SIZE));
-    else
-      eb_c_ptr = malloc(EF_C_UT_UX2_SIZE);
-
-    if (eb_c_ptr == NULL)
-      return ZE_MEM;
-
-    z->extra = eb_l_ptr;
-    eb_l_ptr += z->ext;
-    z->ext += EF_L_UT_UX2_SIZE;
-
-    if (ut_flg != 0) {
-      eb_l_ptr[0]  = 'U';
-      eb_l_ptr[1]  = 'T';
-      eb_l_ptr[2]  = eb_l_ut_len;       /* length of data part of e.f. */
-      eb_l_ptr[3]  = 0;
-      eb_l_ptr[4]  = ut_flg;
-      eb_pt = eb_l_ptr + 5;
-      if (ut_flg & EB_UT_FL_MTIME) {
-        *eb_pt++ = (char)(z_utim->mtime);
-        *eb_pt++ = (char)(z_utim->mtime >> 8);
-        *eb_pt++ = (char)(z_utim->mtime >> 16);
-        *eb_pt++ = (char)(z_utim->mtime >> 24);
-      }
-      if (ut_flg & EB_UT_FL_ATIME) {
-        *eb_pt++ = (char)(z_utim->atime);
-        *eb_pt++ = (char)(z_utim->atime >> 8);
-        *eb_pt++ = (char)(z_utim->atime >> 16);
-        *eb_pt++ = (char)(z_utim->atime >> 24);
-      }
-      if (ut_flg & EB_UT_FL_CTIME) {
-        *eb_pt++ = (char)(z_utim->ctime);
-        *eb_pt++ = (char)(z_utim->ctime >> 8);
-        *eb_pt++ = (char)(z_utim->ctime >> 16);
-        *eb_pt++ = (char)(z_utim->ctime >> 24);
-      }
-    }
-#ifdef UNIX
-    else {
-      eb_pt = eb_l_ptr;
-    }
-    *eb_pt++ = 'U';
-    *eb_pt++ = 'x';
-    *eb_pt++ = EB_UX2_MINLEN;            /* length of data part of local e.f. */
-    *eb_pt++  = 0;
-    *eb_pt++ = (char)(s.st_uid);
-    *eb_pt++ = (char)(s.st_uid >> 8);
-    *eb_pt++ = (char)(s.st_gid);
-    *eb_pt++ = (char)(s.st_gid >> 8);
-#endif /* UNIX */
-
-    z->cextra = eb_c_ptr;
-    eb_c_ptr += z->cext;
-    z->cext += EF_C_UT_UX2_SIZE;
-
-    if (ut_flg != 0) {
-      memcpy(eb_c_ptr, eb_l_ptr, EB_C_UT_SIZE);
-      eb_c_ptr[EB_LEN] = eb_c_ut_len;
-    }
-#ifdef UNIX
-    memcpy(eb_c_ptr+EB_C_UT_SIZE, eb_l_ptr+EB_L_UT_SIZE, EB_C_UX2_SIZE);
-    eb_c_ptr[EB_LEN+EB_C_UT_SIZE] = 0;
-#endif /* UNIX */
-  }
-
-  return ZE_OK;
-}
-
-#endif /* USE_EF_UT_TIME */
-
-
-int set_extra_field (struct zlist *z, iztimes *z_utim )
-{
-    int rv = 0;
-    int last_rv = 0;
-    char flag = 0;
-
-    if ((qlflag & 3) != 1)
-    {
-        qdosextra       *lq, *cq;
-        if ((lq = (qdosextra *) calloc(sizeof(qdosextra), 1)) == NULL)
-            return ZE_MEM;
-        if ((cq = (qdosextra *) calloc(sizeof(qdosextra), 1)) == NULL)
-            return ZE_MEM;
-
-        rv = qlstat(z->name, &(lq->header), &flag);
-
-        if (rv == 0 || (rv == 1 && (qlflag & 2)))
-        {
-            lq->shortid = rev_short((short) SHORTID);
-            lq->len.lo  = (unsigned char)(EXTRALEN & 0xff);
-            lq->len.hi  = (unsigned char)(EXTRALEN >> 8);
-            strcpy(lq->longid, LONGID);
-
-            memcpy(cq, lq, sizeof(qdosextra));
-
-            z->ext      =   sizeof(qdosextra);
-            z->cext     =   sizeof(qdosextra);
-            z->extra    =   (void *) lq;
-            z->cextra   =   (void *) cq;
-            fprintf (stderr, " %c",
-                     lq->header.d_datalen ? '*' : '#');
-        }
-        else if (rv == -1)
-        {
-            fprintf(stderr,
-                    "%s: warning: cannot stat %s, no file header added\n",
-                    "zip", z->name);
-        }
-        if(flag)
-        {
-            fputs (" !", stderr);
-        }
-     }
-    last_rv = (rv == -1 ? ZE_OPEN : ZE_OK);
-
-#ifdef USE_EF_UT_TIME
-# ifdef QDOS
-#   define IZ_UT_FLAGS EB_UT_FL_MTIME
-# endif
-# ifdef UNIX
-#   define IZ_UT_FLAGS (EB_UT_FL_MTIME | EB_UT_FL_ATIME)
-# endif
-# ifndef IZ_UT_FLAGS
-#   define IZ_UT_FLAGS EB_UT_FL_MTIME
-# endif
-
-    rv = GetExtraTime(z, z_utim, IZ_UT_FLAGS);
-    if (rv != ZE_OK)
-        last_rv = rv;
-#endif /* USE_EF_UT_TIME */
-
-    return last_rv;
-}

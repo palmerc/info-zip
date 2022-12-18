@@ -1,12 +1,13 @@
-;===========================================================================
-; Copyright (c) 1990-1999 Info-ZIP.  All rights reserved.
-;
-; See the accompanying file LICENSE, version 1999-Oct-05 or later
-; (the contents of which are also included in zip.h) for terms of use.
-; If, for some reason, both of these files are missing, the Info-ZIP license
-; also may be found at:  ftp://ftp.cdrom.com/pub/infozip/license.html
-;===========================================================================
 #
+;===========================================================================
+; Copyright (c) 1990-2000 Info-ZIP.  All rights reserved.
+;
+; See the accompanying file LICENSE, version 2000-Apr-09 or later
+; (the contents of which are also included in unzip.h) for terms of use.
+; If, for some reason, all these files are missing, the Info-ZIP license
+; also may be found at:  ftp://ftp.info-zip.org/pub/infozip/license.html
+;===========================================================================
+
 .globl _qlflag
 .globl _qlwait
 #ifdef ZIP
@@ -21,16 +22,16 @@
         dc.b    'Info-ZIP'
 *                12345678901234567890
         ds.w    0
-        dc.w    4
-        dc.b    'qdos'
+        dc.w    3
+        dc.b    '?.?'
         ds.w    0
 #else
         dc.w    10
         dc.b    'Info-UNZIP'
 *                12345678901234567890
         ds.w    0
-        dc.w    4
-        dc.b    'qdos'
+        dc.w    3
+        dc.b    '?.?'
         ds.w    0
 #endif
         dc.b    10

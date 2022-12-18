@@ -1,12 +1,12 @@
 #===========================================================================
-# Makefile for Zip, ZipNote, ZipCloak, ZipSplit     AMIGA SAS/C Version 6.58
-# Version:  2.3                                   last revised:  07 Jan 2007
+# Makefile for UnZip, ZipInfo, fUnZip, MakeSFX      AMIGA SAS/C Version 6.58
+# Version:  5.5                                     last revised:  13 Feb 01
 #===========================================================================
-# -John Bush, <John.Bush@East.Sun.COM>
-#         or: <JBush@Bix.COM>
+# from John Bush <john.bush@east.sun.com>
+#            or: <JBush@bix.com>
 
 # updated for SAS/C Version 6.56+ and AmigaDOS 3.1 (V40)
-# by Haidinger Walter, <walthaid@unix.ict.tuwien.ac.at>
+# by Haidinger Walter <walthaid@unix.ict.tuwien.ac.at>
 
 # additional supplements and maintenance by Paul Kienitz
 
@@ -17,12 +17,11 @@
 # Any response is appreciated. Haidinger Walter <walthaid@unix.ict.tuwien.ac.at>
 
 # Available targets:
-# all           builds all executeables below
-# zip           builds zip executeable
-# zipsplit      builds zipsplit executeable
-# zipcloak      builds zipcloak executeable
-# zipnote       builds zipnote executeable
-# ziplm         builds low memory version of zip executable
+# all           builds all executables below
+# unzip         builds unzip executable
+# unzipsfx      builds unzipsfx executable
+# funzip        builds funzip executable
+# makesfx       builds makesfx executable
 # clean         remove all files created by the compilation
 # spotless      like clean target but removes binaries too
 
@@ -31,33 +30,14 @@
 # USER MACRO DEFINITIONS #
 ##########################
 
-# *** NOTE ***
-# The assembly version is not implemented yet.
-# (Un)commenting the assembler macros has no effect unless the
-# file dependencies are changed too.
-# Most of the amiga/*.a files do not assmble with 68000 instructions.
-# Any help is appreciated, of course.
+# Set the processor to generate code for UnZip and fUnZip. Specify one of:
+# ANY 68000 68010 68020 68030 68040 68060  (Default: ANY or 68000)
 
-# Set the processor to generate code for.
-# Compiler:    ANY 68000 68010 68020 68030 68040 68060
-# Assembler:     0     0     1     2     3     4   n/a
-# Defaults: ANY and 0
-#
+# Use of the assembly versions is not supported yet since some of the asm
+# source file do not assemble with 68000 instructions.
+# Any help is appreciated of course.
+
 CUSECPU = ANY
-AUSECPU = 0
-
-# UNCOMMENT to use 68020 instructions in the assembly version of deflate.o
-# Only use if code is generated for 68020 or higher processors above.
-# Note: You could use CPUTEST too to enable runtime cpu detection.
-# However, it is not recommended since both 68000 and 68020 code will be
-# included which would be an unnecessary increase in size.
-# (see amiga/deflate.a for more information)
-#
-#AUSE020 = CPU020
-
-# To disable the assembler replacements and use the standard C source,
-# you have to change the Zip and ZipLM dependencies. See below for details.
-# (remember that assembler use is *not* implemented yet)
 
 # Uncomment both CUTIL and LUTIL to make use of utility.library of OS 2.04+
 # The utility.library is *not* used for UnZipSFX to ensure maximum portability
@@ -73,13 +53,15 @@ AUSECPU = 0
 #
 #CUTIL = UTILLIB DEFINE=_UTILLIB
 #LUTIL = WITH SC:LIB/utillib.with    # include necessary linker defines
+
+
 # Choose one stack-handling method (default=faster)
 # StackExtend: Dynamic runtime stack extension. You won't notice stack overflows.
 # StackCheck: On a stack overflow a requester appears which allows you to exit.
 # Note that either stack watching will slow down your executable because of the
 # extra code run on each function entry. On the other hand, you won't crash
 # anymore due to stack overflows. However, you should not have *any* stack
-# problems with Info-ZIP programs if you raise your stack to 10000 (which I'd
+# problems with info-zip if you raise your stack to 20000 (which I'd
 # recommend as a minimum default stack for all applications) or more using the
 # shell stack command. Type 'Stack 20000' or add it to your S:Shell-Startup.
 # BTW: Typing 'Stack' prints your current stack size.
@@ -88,12 +70,11 @@ CSTACK = NOSTACKCHECK STACKEXTEND     # slow, but always works
 #CSTACK = STACKCHECK NOSTACKEXTEND    # slow, requester & graceful exit
 #CSTACK = NOSTACKCHECK NOSTACKEXTEND  # faster but relies on larger stack (>=10K)
 
-
 #
 # LIBRARIES
 # ---------
 
-# Choose one DATAOPTS , SASLIB , ASMOPTS and LSTARTUP
+# Choose one DATAOPTS , SASLIB and LSTARTUP
 # Always comment/uncomment all macros of a set.
 
 # Library to use with near data and 2-byte integers
@@ -102,14 +83,12 @@ CSTACK = NOSTACKCHECK STACKEXTEND     # slow, but always works
 #        o  see comment in amiga/osdep.h
 #DATAOPTS = DATA=NEAR SHORTINTEGERS DEF=_NEAR_DATA
 #SASLIB   = scs
-#ASMOPTS  = -dINT16
 #LSTARTUP = cres.o
 
 # Library to use with near data and 4-byte integers (DEFAULT)
 # *** use this with the utility.library ***
 DATAOPTS = DATA=NEAR DEF=_NEAR_DATA
 SASLIB   = sc
-ASMOPTS  =
 LSTARTUP = cres.o
 
 # Library to use with far data and 2-byte integers
@@ -117,14 +96,12 @@ LSTARTUP = cres.o
 # old default - far data always works but is slower
 #DATAOPTS = DATA=FAR SHORTINTEGERS DEF=_FAR_DATA
 #SASLIB   = scsnb
-#ASMOPTS  = -dINT16
 #LSTARTUP = c.o
 
 # Library to use with far data and 4-byte integers
 # if everything else fails: try this
 #DATAOPTS = DATA=FAR DEF=_FAR_DATA
 #SASLIB   = scnb
-#ASMOPTS  =
 #LSTARTUP = c.o
 
 
@@ -133,41 +110,33 @@ LSTARTUP = cres.o
 # ---------
 
 # Default: No debugging information added.
-# The three macros below will be overwritten if you choose to add
-# debug info, therefore no need to comment.
-
+# The two macros below will be overwritten if you choose to add
+# debug info, therefore need to comment.
 CDBG = NODEBUG NOPROFILE NOCOVERAGE    # default: no debug info
-ADBG =
 LDBG = STRIPDEBUG                      # default: no debug info
 
 # Compiler and loader debug flags.  Uncomment as needed.  Recomment when done.
 # Optimization disabled for faster compilation (by using NOOPT)
-
-#CDBG1 = DEF=DEBUG DEF=DEBUG_TIME     # enables Info-Zip's debug output
+#CDBG1 = DEF=DEBUG DEF=DEBUG_TIME     # enables Info-ZIP's debug output
 
 # Enable profiling and coverage when desired. Option COVERAGE commented
 # seperately because running coverage may corrupt your drive in case of a
 # system crash since a file 'cover.dat' is created in your working directory.
 # Note that the use of COVERAGE forces the use of the c.o startup module.
-
 #CDBG2 = PROFILE
 #CDBG3 = COVERAGE        # must use c.o startup code:
 #LSTARTUP = c.o          # Uncomment *only* when you use COVERAGE
 
-# *Uncomment* here macros CDBG, ADBG and LDBG to include debugging information
-
+# *Uncomment* _HERE_ macros CDBG and LDBG to include debugging information
 #CDBG = $(CDBG1) $(CDBG2) $(CDBG3) ADDSYM DEBUG=FULLFLUSH STACKCHECK NOOPT
-#ADBG = DEBUG
 #LDBG = ADDSYM
-
 # Optional use of memwatch.library which can be found in your
 # sc:extras/memlib directory. Please read the short docs (memlib.doc).
-# Note that memwatch.library has a small bug: MWTerm() displays always
-# the first entry.
+# Note that memlib has a small bug: MWTerm() displays always the first entry.
 # Get the latest version from aminet (dev/debug/memlib.lha) or
 # contact me to get the patch. Uncomment all macros to use.
 #CMEMLIB  = DEFINE=MWDEBUG=1       # define to enable library
-#LMEMLIB  = SC:LIB/memwatch.lib       # path to library
+#LMEMLIB  = SC:LIB/memwatch.lib    # path to library
 #LSTARTUP = c.o                    # must use c.o with memlib!
 
 
@@ -177,11 +146,10 @@ LDBG = STRIPDEBUG                      # default: no debug info
 
 # Map filenames used when mapping (no need to comment)
 #
-MAPFZ = zip.map                # Zip      map filename
-MAPFN = zipnote.map            # ZipNote  map filename
-MAPFC = zipcloak.map           # ZipCloak map filename
-MAPFS = zipsplit.map           # ZipSplit map filename
-MAPFL = ziplm.map              # Zip low memory version map filename
+MAPFS = unzip.map               # UnZip    map filename
+MAPFX = unzipsfx.map            # UnZipSFX map filename
+MAPFF = funzip.map              # fUnZip   map filename
+MAPFM = makesfx.map             # MakeSFX  map filename
 
 # Map file output: Uncomment to highlight and bold headings.
 #
@@ -192,11 +160,11 @@ MAPFL = ziplm.map              # Zip low memory version map filename
 # SAS/C v6 manual, volume 1: user's guide, chapter 8, page 136: map
 # Default: all options enabled: f,h,l,o,s,x
 #                                 |-> options start here
-#LMAPZ = $(MAPFSTYLE) MAP $(MAPFZ) f,h,l,o,s,x   # Zip      maps
-#LMAPN = $(MAPFSTYLE) MAP $(MAPFN) f,h,l,o,s,x   # ZipNote  maps
-#LMAPC = $(MAPFSTYLE) MAP $(MAPFC) f,h,l,o,s,x   # ZipCloak maps
-#LMAPS = $(MAPFSTYLE) MAP $(MAPFS) f,h,l,o,s,x   # ZipSplit maps
-#LMAPL = $(MAPFSTYLE) MAP $(MAPFL) f,h,l,o,s,x   # Zip lowmem maps
+#LMAPS = $(MAPFSTYLE) MAP $(MAPFS) f,h,l,o,s,x   # UnZip    maps
+#LMAPX = $(MAPFSTYLE) MAP $(MAPFX) f,h,l,o,s,x   # UnZipSFX maps
+#LMAPF = $(MAPFSTYLE) MAP $(MAPFF) f,h,l,o,s,x   # fUnZip   maps
+#LMAPM = $(MAPFSTYLE) MAP $(MAPFM) f,h,l,o,s,x   # MakeSFX  maps
+
 
 #
 # LISTINGS
@@ -204,14 +172,14 @@ MAPFL = ziplm.map              # Zip low memory version map filename
 
 # Listfile-extensions for each executable (enter *with* dot)
 #
-LISTEXTZ = .lst   # extension for Zip listfiles
-LISTEXTU = .ulst  # extension for utility listfiles (ZipNote,ZipCloak,ZipSplit)
-LISTEXTL = .llst  # extension for Zip low memory listfiles
+LISTEXTS = .lst         # extension for UnZip and MakeSFX listfiles
+LISTEXTX = .xlst        # extension for UnZipSFX listfiles
+LISTEXTF = .flst        # extension for fUnZip listfiles
 
 
 # List files and cross references for each OBJECT.
-# Add/remove flags as needed. Not all listed by default.
-# Use LISTINCLUDES to determine the dependencies for smake
+# Add/remove flags as needed. All listed by default.
+# Use LISTINCLUDES only to determine the dependencies for smake
 #
 CLISTOPT = LISTHEADERS LISTMACROS # LISTSYSTEM LISTINCLUDES
 CXREFOPT = XHEAD XSYS
@@ -246,61 +214,46 @@ CIGNORE = IGNORE=105,304,306,317
 # Transformation rules require unique extensions.
 # Enter *with* dot.
 #
-O  = .o     # extension for Zip     objects
-OU = .uo    # extension for utility objects (ZipNote, ZipSplit and ZipCloak)
-OL = .lo    # extension for low memory Zip objects
+O  = .o         # general extension for objects
+OX = .xo        # extension for special UnZipSFX objects
+OF = .fo        # extension for special fUnZip objects
 
 
 # Filename used to store converted options from environment variable
-# LOCAL_ZIP. Default: scoptions_local_zip
+# LOCAL_UNZIP. Default: scoptions_local_unzip
 #
-CWITHOPT = scoptions_local_zip
+CWITHOPT = scoptions_local_unzip
 
 
 # Filenames to store compiler options to prevent command line overflow
 #
-# Common options file for Zip and other executables
-CFILE = scoptions-zip
+# Options file for UnZip and fUnZip
+CFILEC = scoptions-unzip
+# Options file for UnZipSFX
+CFILEX = scoptions-unzipsfx
+# Special options for MakeSFX
+CFILEM = scoptions-makesfx
 
 
 # Temp filenames for object lists to load using linker "WITH" command.
-OBJLISTZ = zip_objlist.with            # Zip      object list
-OBJLISTN = zipnote_objlist.with        # ZipNote  object list
-OBJLISTC = zipcloak_objlist.with       # ZipCloak object list
-OBJLISTS = zipsplit_objlist.with       # ZipSplit object list
-OBJLISTL = ziplm_objlist.with          # Zip low-mem object list
+#
+OBJLISTS = unzip_objlist.with            # UnZip    object list
+OBJLISTX = unzipsfx_objlist.with         # UnZipSFX object list
+OBJLISTF = funzip_objlist.with           # fUnZip   object list
+OBJLISTM = makesfx_objlist.with          # MakeSFX  object list
 
 
 # Filenames to store linker options
 #
-LWITHZ = zip.lnk                       # zip      linker options
-LWITHN = zipnote.lnk                   # zipnote  linker options
-LWITHC = zipcloak.lnk                  # zipcloak linker options
-LWITHS = zipsplit.lnk                  # zipsplit linker options
-LWITHL = ziplm.lnk                     # zip low-mem linker options
+LWITHS = unzip.lnk                       # UnZip    linker options
+LWITHX = unzipsfx.lnk                    # UnZipSFX linker options
+LWITHF = funzip.lnk                      # fUnZip   linker options
+LWITHM = makesfx.lnk                     # MakeSFX  linker options
 
 
-# Define AMIGA_BETA to print "Beta Notice" up front.  See tailor.h.
-# Undefine AMIGA_BETA when building a released version.
-#CDEFBETA = DEF=AMIGA_BETA
-
-#####################################
-# NOTHING TO CHANGE BEYOND HERE ... #
-#####################################
-# (except for C/asm dependencies)
-
-# Define MEDIUM_MEM for production release (per Paul Kienitz).
-# This reduces runtime memory requirement but not speed or compression.
-# Note: Do *not* use BIG_MEM or MMAP since it isn't yet supported by the
-        assembler version of deflate.c : amiga/deflate.a
-CUSEMEM = DEF=MEDIUM_MEM
-AUSEMEM = -DMEDIUM_MEM       # for asm deflate.o, must match above
-
-
-# Defines for building low-memory use version of Zip
-WSIZEL   = WSIZE=4096     # deflate.c window size for low-mem version
-CLOWMEM = DEF=SMALL_MEM DEF=$(WSIZEL)
-ALOWMEM = -DSMALL_MEM   -D$(WSIZEL)  # for asm deflate.o, must match above
+######################################
+#  NOTHING TO CHANGE BEYOND HERE ... #
+######################################
 
 
 # Compiler definitions
@@ -315,41 +268,37 @@ OPT1 = OPT OPTINL OPTINLOCAL OPTTIME OPTLOOP OPTSCHED
 OPT2 = OPTCOMP=$(OPTPASSES) OPTDEP=$(OPTPASSES) OPTRDEP=$(OPTPASSES)
 OPT  = $(OPT1) $(OPT2)
 
-
 # Compiler flags
 #
-CDEFINES = $(CMEMLIB) $(CDEFBETA) DEF=AMIGA
-COPTIONS = $(DATAOPTS) CODE=NEAR CPU=$(CUSECPU) VERBOSE PARAMETERS=BOTH NOMINC
-COPTIONS = $(COPTIONS) ERRORREXX NOERRORCONSOLE MEMSIZE=HUGE $(CLIST) $(CXREF)
-COPTIONS = $(COPTIONS) $(CSTACK) $(CUTIL) STRICT UNSCHAR NOICONS STRINGMERGE
-CFLAGS = $(CDEFINES) $(COPTIONS) $(OPT) $(CDBG) $(CIGNORE)
+# cpu flags for UnZip and fUnZip
+CCPUOPTSF = CPU=$(CUSECPU) $(CUTIL)
+# cpu flags for UnzipSFX and MakeSFX (ensures portability to all Amigas)
+CCPUOPTXM = CPU=ANY
 
+CDEFINES = $(CMEMLIB) $(CDEFINES) DEF=AMIGA DEF=PROTO
+COPTIONS = CODE=NEAR NMINC VERBOSE STRINGMERGE PARAMETERS=BOTH
+COPTIONS = $(COPTIONS) ERRORREXX NOERRORCONSOLE MEMSIZE=HUGE $(CLIST) $(CXREF)
+COPTIONS = $(COPTIONS) $(CSTACK) STRICT UNSCHAR NOICONS
+COPTIONS = $(COPTIONS) $(CIGNORE) $(OPT) $(CDBG)
+# common compiler flags
+CFLAGSC  = $(CDEFINES) $(DATAOPTS) $(COPTIONS)
+# special compiler flags with $(DATAOPTS) excluded
+CFLAGSS  = $(CDEFINES) $(COPTIONS)
 
 # Linker definitions
 #  See SASLIB definition above
 #
 LD = slink
-# special linker flags for pure (i.e. resident) binary.
+# special linker flags for UnZip to create pure (i.e. resident) binary.
 LDFLAGSS = FROM SC:LIB/$(LSTARTUP)
 # common linker flags for all other executeables
 LDFLAGSC = FROM SC:LIB/c.o
+
 LDFLAGS2 = NOICONS $(LDBG)
-LIBFLAGS = LIB $(LMEMLIB) SC:LIB/$(SASLIB).lib SC:LIB/amiga.lib
-
-
-# Assembler definitions
-#
-ASM = asm
-#
-# Options used for assembling amiga/deflate.a
-# Must match defines in C-Source.
-#
-AFLAGS0  = -d__SASC -dSASC -dAMIGA
-AFLAGS1  = $(AUSE020) $(ASMOPTS) $(ADBG)
-AFLAGS2  = -m$(AUSECPU) -jm -iINCLUDE:
-AFLAGS   = $(AFLAGS0) $(AFLAGS1) $(AFLAGS2)
-ASMOPTSZ = $(AFLAGS) $(AUSEMEM) -dDYN_ALLOC     # Zip asm flags
-ASMOPTSL = $(AFLAGS) $(ALOWMEM)                 # Zip low-mem version asm flags
+# special linker flags to select library set above
+LIBFLAGSS = LIB $(LMEMLIB) SC:LIB/$(SASLIB).lib SC:LIB/amiga.lib
+# common linker flags
+LIBFLAGSC = LIB $(LMEMLIB) SC:LIB/sc.lib SC:LIB/amiga.lib
 
 
 ##################
@@ -357,208 +306,183 @@ ASMOPTSL = $(AFLAGS) $(ALOWMEM)                 # Zip low-mem version asm flags
 ##################
 
 
-# Zip objects
-OBJZ1 = zip$(O) zipfile$(O) zipup$(O) fileio$(O) util$(O) globals$(O)
-OBJZ2 = crc32$(O) crypt$(O) timezone$(O) ttyio$(O)
-OBJZI = deflate$(O) trees$(O)
-OBJZA = amiga$(O) amigazip$(O) stat$(O) filedate$(O)
-OBJZ  = $(OBJZ1) $(OBJZ2) $(OBJZI) $(OBJZA)
+# UnZip Objects
+OBJS1 = unzip$(O) crc32$(O) crctab$(O) crypt$(O) envargs$(O) explode$(O)
+OBJS2 = extract$(O) fileio$(O) globals$(O) list$(O) inflate$(O) match$(O)
+OBJS3 = process$(O) ttyio$(O) unreduce$(O) unshrink$(O) zipinfo$(O)
+OBJSA = amiga$(O) timezone$(O)
+OBJS  = $(OBJS1) $(OBJS2) $(OBJS3) $(OBJSA)
 
-# Shared utility objects for ZipNote, ZipCloak and ZipSplit
-OBJU1 = globals$(O)
-OBJUU = zipfile$(OU) fileio$(OU) timezone$(O) util$(OU)
-OBJUA = amigazip$(OU) amiga$(O) stat$(O) filedate$(O)
-OBJU  = $(OBJU1) $(OBJUU) $(OBJUA)
+# UnZipSFX Objects
+OBJX1 = unzip$(OX) extract$(OX) inflate$(OX) match$(OX) process$(OX)
+OBJXI = crypt$(OX) crc32$(O) crctab$(OX) fileio$(OX) globals$(OX) ttyio$(OX)
+OBJXA = amiga$(OX) timezone$(OX)
+OBJX  = $(OBJX1) $(OBJXI) $(OBJXA)
 
-# ZipNote objects
-OBJN1 = zipnote$(O)
-OBJN  = $(OBJN1) $(OBJU)
+# fUnZip Objects
+OBJF1 = funzip$(O)
+OBJF2 = crc32$(OF) crypt$(OF) globals$(OF) inflate$(OF) ttyio$(OF)
+OBJFA = filedate$(OF) stat$(O)
+OBJF  = $(OBJF1) $(OBJF2) $(OBJFA)
 
-# ZipCloak objects
-OBJC1 = zipcloak$(O)
-OBJCU = $(OBJU) crypt$(OU)
-OBJCS = crc32$(OU) ttyio$(O)
-OBJC  = $(OBJC1) $(OBJCU) $(OBJCS)
-
-#ZipSplit objects
-OBJS1 = zipsplit$(O)
-OBJS  = $(OBJS1) $(OBJU)
-
-# ZipLM objects
-OBJL1 = zip$(OL) zipfile$(OL) zipup$(OL) fileio$(OL) util$(OL) globals$(OL)
-OBJL2 = crc32$(OL) crypt$(OL) timezone$(OL) ttyio$(OL)
-OBJLI = deflate$(OL) trees$(OL)
-OBJLA = amiga$(OL) amigazip$(OL) stat$(OL) filedate$(OL)
-OBJL  = $(OBJL1) $(OBJL2) $(OBJLI) $(OBJLA)
+# MakeSFX Objects
+OBJM = makesfx$(O)
 
 # Common header files
-ZIP_H1 = zip.h ziperr.h tailor.h
-ZIP_HA = amiga/osdep.h amiga/z-stat.h
-ZIP_H  = $(ZIP_H1) $(ZIP_HA)
+UNZIP_H1 = unzip.h unzpriv.h globals.h
+UNZIP_HA = amiga/amiga.h amiga/z-stat.h
+UNZIP_H  = $(UNZIP_H1) $(UNZIP_HA)
 
 # Output targets
-ZIPS  = Zip ZipNote ZipCloak ZipSplit ZipLM
+UNZIPS = UnZip UnZipSFX fUnZip MakeSFX
 
-
-# Temp filenames for object lists to load using linker "WITH" command.
-OBJLISTZ = zip_objlist.with            # Zip      object list
-OBJLISTN = zipnote_objlist.with        # ZipNote  object list
-OBJLISTC = zipcloak_objlist.with       # ZipCloak object list
-OBJLISTS = zipsplit_objlist.with       # ZipSplit object list
-OBJLISTL = ziplm_objlist.with          # Zip low-mem object list
 
 #######################################
 # DEFAULT TARGET AND PROCESSING RULES #
 #######################################
 
-all: request flush $(ZIPS)
+all: request flush $(UNZIPS)
 
-# Zip transformation rules
+# UnZip transformation rules
 #
-.c$(O):
-      $(CC) WITH=$(CFILE) $(CUSEMEM) LISTFILE=$>$(LISTEXTZ) OBJNAME=$@ $*.c
+.c$(O) :
+        $(CC) WITH=$(CFILEC) LISTFILE=$>$(LISTEXTS) OBJNAME=$@ $*.c
 
-# Zip low-memory version transformation rules
+# UnZipSFX transformation rules
 #
-.c$(OL):
-      $(CC) WITH=$(CFILE) $(CLOWMEM) LISTFILE=$>$(LISTEXTL) OBJNAME=$@ $*.c
+.c$(OX):
+        $(CC) DEF=SFX WITH=$(CFILEC) LISTFILE=$>$(LISTEXTX) OBJNAME=$@ $*.c
 
-# Utilities (ZipNote, ZipCloak and ZipSplit) transformation rules
+# fUnZip transformation rules
 #
-.c$(OU):
-      $(CC) WITH=$(CFILE) $(CUSEMEM) DEF=UTIL LISTFILE=$>$(LISTEXTU) OBJNAME=$@ $*.c
+.c$(OF):
+        $(CC) DEF=FUNZIP WITH=$(CFILEC) LISTFILE=$>$(LISTEXTF) OBJNAME=$@ $*.c
 
 
 #########################
 # Final output targets. #
 #########################
 
-
-zip:      local_zip CommonFlags $(OBJZ)
-          @Echo "$(OBJZ)" > $(OBJLISTZ)
-          Type $(OBJLISTZ)
-          @Echo "$(LDFLAGSS) $(LUTIL) WITH $(OBJLISTZ) $(LIBFLAGS)" \
-                "$(LDFLAGS2) $(LMAPZ)" >$(LWITHZ)
-          Type $(LWITHZ)
-          $(LD) TO Zip      WITH $(LWITHZ)
-
-zipnote:  local_zip CommonFlags $(OBJN)
-          @Echo "$(OBJN)" > $(OBJLISTN)
-          Type $(OBJLISTN)
-          @Echo "$(LDFLAGSS) $(LUTIL) WITH $(OBJLISTN) $(LIBFLAGS) " \
-                "$(LDFLAGS2) $(LMAPN)" >$(LWITHN)
-          Type $(LWITHN)
-          $(LD) TO ZipNote  WITH $(LWITHN)
-
-zipcloak: local_zip CommonFlags $(OBJC)
-          @Echo "$(OBJC)" > $(OBJLISTC)
-          Type $(OBJLISTC)
-          @Echo "$(LDFLAGSS) $(LUTIL) WITH $(OBJLISTC) $(LIBFLAGS) " \
-                "$(LDFLAGS2) $(LMAPC)" >$(LWITHC)
-          Type $(LWITHC)
-          $(LD) TO ZipCloak WITH $(LWITHC)
-
-zipsplit: local_zip CommonFlags $(OBJS)
-          @Echo "$(OBJS)" > $(OBJLISTS)
+unzip:    local_unzip CommonFlags $(OBJS)
+          @Echo "$(OBJS)" >$(OBJLISTS)
           Type $(OBJLISTS)
-          @Echo "$(LDFLAGSS) $(LUTIL) WITH $(OBJLISTS) $(LIBFLAGS) " \
+# -----
+# Note:   Change $(LDFLAGSS) to $(LDFLAGSC) if DYN_ALLOC is *not* defined.
+# -----
+          @Echo "$(LDFLAGSS) $(LUTIL) WITH $(OBJLISTS) $(LIBFLAGSS) " \
                 "$(LDFLAGS2) $(LMAPS)" >$(LWITHS)
           Type $(LWITHS)
-          $(LD) TO ZipSplit WITH $(LWITHS)
+          $(LD) TO UnZip    WITH $(LWITHS)
 
-ziplm:    local_zip CommonFlags $(OBJL)
-          @Echo "$(OBJL)" > $(OBJLISTL)
-          Type $(OBJLISTL)
-          @Echo "$(LDFLAGSS) $(LUTIL) WITH $(OBJLISTL) $(LIBFLAGS) " \
-                "$(LDFLAGS2) $(LMAPL)" >$(LWITHL)
-          Type $(LWITHL)
-          $(LD) TO ZipLM    WITH $(LWITHL)
+funzip:   local_unzip CommonFlags $(OBJF)
+          @Echo "$(OBJF)" >$(OBJLISTF)
+          Type $(OBJLISTF)
+          @Echo "$(LDFLAGSC) $(LUTIL) WITH $(OBJLISTF) $(LIBFLAGSS) " \
+                "$(LDFLAGS2) $(LMAPF)" >$(LWITHF)
+          Type $(LWITHF)
+          $(LD) TO fUnZip   WITH $(LWITHF)
 
+unzipsfx: local_unzip SFXFlags $(OBJX)
+          @Echo "$(OBJX)" >$(OBJLISTX)
+          Type $(OBJLISTX)
+# ----
+# Note:   Insert $(LUTIL) here, to use utility library with UnZipSFX.
+# -----                      vvvvvvv
+          @Echo "$(LDFLAGSC)          WITH $(OBJLISTX) $(LIBFLAGSS) " \
+                "$(LDFLAGS2) $(LMAPX)" >$(LWITHX)
+          Type $(LWITHX)
+          $(LD) TO UnZipSFX WITH $(LWITHX)
+
+
+makesfx:  MakeSFXFlags $(OBJM)
+          @Echo "$(OBJM)" >$(OBJLISTM)
+          Type $(OBJLISTM)
+          @Echo "$(LDFLAGSC) $(LUTIL) WITH $(OBJLISTM) $(LIBFLAGSC) " \
+                "$(LDFLAGS2) $(LMAPM)" >$(LWITHM)
+          Type $(LWITHM)
+          # never use short-integers with MakeSFX !
+          $(LD) TO MakeSFX  WITH $(LWITHM)
 
 clean:
-        -Delete >nil: $(OBJZ) quiet
-        -Delete >nil: $(OBJN) quiet
-        -Delete >nil: $(OBJC) quiet
         -Delete >nil: $(OBJS) quiet
-        -Delete >nil: $(OBJL) quiet
-        -Delete >nil: $(OBJLISTZ) $(OBJLISTL) $(OBJLISTN) $(OBJLISTS) $(OBJLISTC) quiet
-        -Delete >nil: $(MAPFZ) $(MAPFN) $(MAPFC) $(MAPFS) $(MAPFL) quiet
-        -Delete >nil: \#?$(LISTEXTZ) \#?$(LISTEXTU) \#?$(LISTEXTL) quiet
-        -Delete >nil: $(CWITHOPT) $(CFILE) quiet
-        -Delete >nil: $(LWITHZ) $(LWITHN) $(LWITHC) $(LWITHS) $(LWITHL) quiet
-        -Delete >nil: env:VersionDate quiet
+        -Delete >nil: $(OBJX) quiet
+        -Delete >nil: $(OBJF) quiet
+        -Delete >nil: $(OBJM) quiet
+        -Delete >nil: $(OBJLISTS) $(OBJLISTX) $(OBJLISTF) $(OBJLISTM) quiet
+        -Delete >nil: $(MAPFS) $(MAPFX) $(MAPFF) $(MAPFM) quiet
+        -Delete >nil: \#?$(LISTEXTS) \#?$(LISTEXTX) \#?$(LISTEXTF) quiet
+        -Delete >nil: $(CWITHOPT) $(CFILEC) $(CFILEX) $(CFILEM) quiet
+        -Delete >nil: SCOPTIONS SASCOPTS quiet
+        -Delete >nil: $(LWITHS) $(LWITHX) $(LWITHF) $(LWITHM) quiet
         -Delete >nil: \#?.q.?? \#?.tmp \#?.cov quiet
 
 spotless: clean
-        -Delete >nil: $(ZIPS) quiet
+        -Delete >nil: $(UNZIPS) quiet
 
 
-################
-# DEPENDENCIES #
-################
+# UnZip dependencies:
+# (objects not needed by Amiga port are commented)
 
-# To change between the assembler and C sources, you have to comment/uncomment
-# the approprite lines. C sources are marked by #C-src and assembler sources
-# #asm-src at the end.
-# Zip dependencies:
+# special rule for adding Amiga internal version number to UnZip
+amiga$(O):          amiga/amiga.c amiga/filedate.c amiga/stat.c $(UNZIP_H) crypt.h timezone.h env:Workbench
+stat$(O):           amiga/stat.c     amiga/z-stat.h
+filedate$(O):       amiga/filedate.c crypt.h timezone.h
+api$(O):            api.c      $(UNZIP_H) unzvers.h #zlib.h
+apihelp$(O):        apihelp.c  $(UNZIP_H) unzvers.h
+crc32$(O):          crc32.c    $(UNZIP_H) zip.h
+crctab$(O):         crctab.c   $(UNZIP_H) zip.h
+crypt$(O):          crypt.c    $(UNZIP_H) zip.h crypt.h ttyio.h
+envargs$(O):        envargs.c  $(UNZIP_H)
+explode$(O):        explode.c  $(UNZIP_H)
+extract$(O):        extract.c  $(UNZIP_H) crypt.h
+fileio$(O):         fileio.c   $(UNZIP_H) crypt.h ttyio.h ebcdic.h
+globals$(O):        globals.c  $(UNZIP_H)
+inflate$(O):        inflate.c  $(UNZIP_H) inflate.h #zlib.h
+list$(O):           list.c     $(UNZIP_H)
+match$(O):          match.c    $(UNZIP_H)
+process$(O):        process.c  $(UNZIP_H)
+timezone$(O):       timezone.c $(UNZIP_H) zip.h timezone.h
+ttyio$(O):          ttyio.c    $(UNZIP_H) zip.h crypt.h ttyio.h
+unreduce$(O):       unreduce.c $(UNZIP_H)
+unshrink$(O):       unshrink.c $(UNZIP_H)
+unzip$(O):          unzip.c    $(UNZIP_H) crypt.h unzvers.h consts.h #zlib.h
+#unzipstb$(O):       unzipstb.c $(UNZIP_H) unzvers.h
+zipinfo$(O):        zipinfo.c  $(UNZIP_H)
+
+
+# UnZipSFX dependencies:
 #
-
-zip$(O):        zip.c      $(ZIP_H) revision.h crc32.h crypt.h ttyio.h
-zipup$(O):      zipup.c    $(ZIP_H) revision.h crc32.h crypt.h amiga/zipup.h
-zipfile$(O):    zipfile.c  $(ZIP_H) revision.h crc32.h
-crypt$(O):      crypt.c    $(ZIP_H) crypt.h crc32.h ttyio.h
-ttyio$(O):      ttyio.c    $(ZIP_H) crypt.h ttyio.h
-deflate$(O):    deflate.c  $(ZIP_H)                          #C-src
-trees$(O):      trees.c    $(ZIP_H)
-fileio$(O):     fileio.c   $(ZIP_H) crc32.h
-util$(O):       util.c     $(ZIP_H)
-crc32$(O):      crc32.c    $(ZIP_H) crc32.h
-globals$(O):    globals.c  $(ZIP_H)
-timezone$(O):   timezone.c $(ZIP_H) timezone.h
-# Amiga specific objects
-stat$(O):       amiga/stat.c     amiga/z-stat.h
-filedate$(O):   amiga/filedate.c crypt.h timezone.h
-amiga$(O):      amiga/amiga.c    ziperr.h
-amigazip$(O):   amiga/amigazip.c $(ZIP_H) amiga/amiga.h env:Workbench
-# Substitute assembly version of deflate.c:
-#deflate$(O):  amiga/deflate.a                               #asm-src
-#        $(ASM) $(ASMOPTSZ) -o$@ $*.a                        #asm-src
+# special rule for adding Amiga internal version number to UnZipSFX
+amiga$(OX):      amiga/amiga.c amiga/filedate.c amiga/stat.c $(UNZIP_H) crypt.h timezone.h
+unzip$(OX):      unzip.c    $(UNZIP_H) crypt.h unzvers.h consts.h
+crctab$(OX):     crctab.c   $(UNZIP_H) zip.h
+crypt$(OX):      crypt.c    $(UNZIP_H) zip.h crypt.h ttyio.h
+extract$(OX):    extract.c  $(UNZIP_H) crypt.h
+fileio$(OX):     fileio.c   $(UNZIP_H) crypt.h ttyio.h ebcdic.h
+globals$(OX):    globals.c  $(UNZIP_H)
+inflate$(OX):    inflate.c  $(UNZIP_H) inflate.h #zlib.h
+match$(OX):      match.c    $(UNZIP_H)
+process$(OX):    process.c  $(UNZIP_H)
+timezone$(OX):   timezone.c $(UNZIP_H) zip.h timezone.h
+ttyio$(OX):      ttyio.c    $(UNZIP_H) zip.h crypt.h ttyio.h
 
 
-# Utility (ZipNote, ZipCloak, ZipSplit) dependencies:
+# fUnZip dependencies:
 #
-zipnote$(O):    zipnote.c  $(ZIP_H) revision.h
-zipcloak$(O):   zipcloak.c $(ZIP_H) revision.h crc32.h crypt.h ttyio.h
-zipsplit$(O):   zipsplit.c $(ZIP_H) revision.h
-zipfile$(OU):   zipfile.c  $(ZIP_H) revision.h crc32.h
-fileio$(OU):    fileio.c   $(ZIP_H) crc32.h
-util$(OU):      util.c     $(ZIP_H)
-crc32$(OU):     crc32.c    $(ZIP_H) crc32.h
-crypt$(OU):     crypt.c    $(ZIP_H) crypt.h crc32.h ttyio.h
-# Amiga specific objects
-amigazip$(OU):   amiga/amigazip.c $(ZIP_H) amiga/amiga.h env:Workbench
+funzip$(O):      funzip.c   $(UNZIP_H) crypt.h ttyio.h tables.h
+crc32$(OF):      crc32.c    $(UNZIP_H) zip.h
+crypt$(OF):      crypt.c    $(UNZIP_H) zip.h crypt.h ttyio.h
+globals$(OF):    globals.c  $(UNZIP_H)
+inflate$(OF):    inflate.c  $(UNZIP_H) inflate.h crypt.h #zlib.h
+ttyio$(OF):      ttyio.c    $(UNZIP_H) zip.h crypt.h ttyio.h
+filedate$(OF):   amiga/filedate.c crypt.h
 
-# ZipLM dependencies:
+
+# MakeSFX dependencies
 #
-zip$(OL):       zip.c      $(ZIP_H) revision.h crc32.h crypt.h ttyio.h
-zipup$(OL):     zipup.c    $(ZIP_H) revision.h crc32.h crypt.h amiga/zipup.h
-zipfile$(OL):   zipfile.c  $(ZIP_H) revision.h crc32.h
-crypt$(OL):     crypt.c    $(ZIP_H) crypt.h crc32.h ttyio.h
-ttyio$(OL):     ttyio.c    $(ZIP_H) crypt.h ttyio.h
-deflate$(OL):   deflate.c  $(ZIP_H)
-trees$(OL):     trees.c    $(ZIP_H)
-fileio$(OL):    fileio.c   $(ZIP_H) crc32.h
-util$(OL):      util.c     $(ZIP_H)
-crc32$(OL):     crc32.c    $(ZIP_H)
-globals$(OL):   globals.c  $(ZIP_H)
-timezone$(OL):  timezone.c $(ZIP_H) timezone.h
-# Amiga specific objects
-stat$(OL):      amiga/stat.c     amiga/z-stat.h
-filedate$(OL):  amiga/filedate.c crypt.h timezone.h
-amiga$(OL):     amiga/amiga.c    ziperr.h
-# Substitute assembly version of deflate.c:
-#deflate$(OL): amiga/deflate.a
-#        $(ASM) $(ASMOPTSL) -o$@ $*.a
+# special transformation rules to never use shortintegers:
+makesfx$(O):      amiga/makesfx.c
+        $(CC) WITH=$(CFILEM) LISTFILE=$>$(LISTEXTS) OBJNAME=$@ $*.c
 
 
 ########################
@@ -571,26 +495,33 @@ flush:
 
 # write common compiler flags to file and echo to user
 CommonFlags:
-        @Echo "$(CFLAGS)"    >$(CFILE)
-        @Type "$(CWITHOPT)" >>$(CFILE)
-        -Type $(CFILE)
+        @Echo "$(CFLAGSC)" "$(CCPUOPTSF)" >$(CFILEC)
+        @Type "$(CWITHOPT)"              >>$(CFILEC)
+        -Type $(CFILEC)
+
+SFXFlags:
+        @Echo "$(CFLAGSC)" "$(CCPUOPTXM)" >$(CFILEX)
+        @Type "$(CWITHOPT)"              >>$(CFILEX)
+        -Type $(CFILEX)
+
+# write special MakeSFX flags
+MakeSFXFlags:
+        @Echo "$(CFLAGSS) $(CCPUOPTXM) DATA=NEAR NOSHORTINTEGERS" >$(CFILEM)
+        # not really needed but if someday used:
+        @Type "$(CWITHOPT)" >>$(CFILEM)
+        -Type $(CFILEM)
 
 
-# special rules for adding Amiga internal version number to amiga/amiga.c
+# special rule for adding Amiga internal version number to amiga.c
 amiga$(O):
-         rx > env:VersionDate "say '""'translate(date('E'),'.','/')'""'"
-         $(CC) WITH=$(CFILE) $(CUSEMEM) LISTFILE=$>$(LISTEXTZ) OBJNAME=$@ $*.c
-         -Delete env:VersionDate
-
-amiga$(OL):
-         rx > env:VersionDate "say '""'translate(date('E'),'.','/')'""'"
-         $(CC) WITH=$(CFILE) $(CLOWMEM) LISTFILE=$>$(LISTEXTL) OBJNAME=$@ $*.c
-         -Delete env:VersionDate
+        rx > env:VersionDate "say '""'translate(date('E'),'.','/')'""'"
+        $(CC) WITH=$(CFILEC) LISTFILE=$>$(LISTEXTS) OBJNAME=$@ $*.c
+        -Delete env:VersionDate
 
 
-# needed in amiga/amigazip.c
+# needed in amiga/amiga.c
 # should be set in startup-sequence, but just in case:
-# (only works with OS 2.0 and above)
+# (only works with OS 2.04 and above)
 
 env\:WorkBench:
         @Execute < < (Workbench_smk.tmp)
@@ -602,30 +533,67 @@ env\:WorkBench:
         <
 
 
-# Read environment variable LOCAL_ZIP and convert options to SAS format
+# #################
+# ### LOCAL_UNZIP ###
+# #################
+#
+# Read environment variable LOCAL_UNZIP and convert options from old Lattice
+# v5 to new SAS/C v6 format. You may also use the new DEFINE= syntax but
+# be sure not to mix v5 and v6 options, otherwise lctosc will be confused.
 #
 # e.g.: to define FOO_ONE and FOO_TWO enter:
 #
-# SetEnv LOCAL_ZIP "-DFOO_ONE -DFOO_TWO"
+# SetEnv LOCAL_UNZIP "-DFOO_ONE -DFOO_TWO"
 #
-# Put the statement into your startup-sequence or (for AmigaDOS 2.0 or higher
-# only) make sure LOCAL_ZIP is stored in the ENVARC: directory
-# ( Copy ENV:LOCAL_ZIP ENVARC: )
+# To make this permanent, i.e. survive an reboot, put the statement into
+# your startup-sequence or (for AmigaDOS 2.0 or higher only) make sure
+# LOCAL_UNZIP is stored in the ENVARC: directory too. To do this, simply
+# copy the file from ENV: to ENVARC:
+#   Copy ENV:LOCAL_UNZIP ENVARC:
+#
+# For a list of all valid non-standard compilation options see the INSTALL
+# file in the root zip tree. Please read the notes there before using the
+# non-standard options.
+#
+# e.g.: To use the non-standard timezone environment variable "INFOZIP_TZ"
+#	(or another arbitary name) instead of "TZ", type in your shell:
+#
+#	Setenv LOCAL_UNZIP "-DTZ_ENVVAR=*"INFOZIP_TZ*""
+#
+# Note that you need to escape the quotes of INFOZIP_TZ with leading stars.
+# To verify that LOCAL_UNZIP has been saved correctly, use the Getenv command:
+#
+#	Getenv LOCAL_UNZIP
+#
+# ...should display:
+#
+#	-DTZ_ENVVAR="INFOZIP_TZ"
 #
 
-local_zip:
-        @Execute < < (Local_Zip_smk.tmp)
+local_unzip:
+        @Execute < < (Local_UnZip_smk.tmp)
            Failat 21
-           If exists ENV:LOCAL_ZIP
-              Echo "Using environment variable LOCAL_ZIP !"
-              Copy >NIL: ENV:LOCAL_ZIP SASCOPTS
+           Echo ""
+           If exists ENV:LOCAL_UNZIP
+              Echo "Using environment variable LOCAL_UNZIP !"
+              Echo "LOCAL_UNZIP: " NOLINE
+              GetEnv LOCAL_UNZIP
+              Copy >NIL: ENV:LOCAL_UNZIP SASCOPTS
            Else
-              Echo "You could use envvar ZIP_OPT to set your special compilation options."
+              Echo "You could use envvar LOCAL_UNZIP to set your special compilation options."
+              Echo "See the makefile for more information (LOCAL_UNZIP section)."
               Delete >nil: SASCOPTS quiet
            Endif
-           ; Do not remove the lctosc command! If LOCAL_ZIP is unset, an
+           Echo ""
+           ; Do not remove the lctosc command! If LOCAL_UNZIP is unset, an
            ; empty file is created which needed by CommonFlags !
-           lctosc >$(CWITHOPT)
+           ; Moreover, lctosc also accepts new v6 options, i.e. only changes
+           ; known v5 options. Try `lctosc -Dfoo' and `lctosc DEFINE=foo'.
+           ; However, you *must not* mix v5 and v6 options!
+           lctosc > $(CWITHOPT)
+           ; Now make sure that env:sc/scoptions are NOT used
+           ; we just create an empty file. The options are stored elsewhere.
+           Echo > SCOPTIONS "" NOLINE
         <
 
 
@@ -644,12 +612,11 @@ request:
         @Echo " this makefile."
         @Echo " If you mail me, I'll put you on my mailing-list and notify you whenever"
         @Echo " new versions of Info-Zip are released."
-        @Echo " Have a look at the makefile for changes like CPU type, UtilLib, etc."
-        @Echo " Feel free to mail comments, suggestions, etc."
+        @Echo " Have a look at the makefile for changes like CPU type, UtilLib, Stack, etc."
+        @Echo " Feel free to mail comments, suggestions, critics..."
         @Echo " Enjoy Info-Zip !"
         @Echo " Haidinger Walter, <walthaid@unix.ict.tuwien.ac.at>"
         @Echo ""
-
 
 # Echo help in case of an error
 #
@@ -657,6 +624,5 @@ request:
         @Echo ""
         @Echo "[sigh] An error running this makefile was detected."
         @Echo "This message may also appear if you interrupted smake by pressing CTRL-C."
-        @Echo "Contact Info-Zip authors at Zip-Bugs@lists.wku.edu or me for help."
+        @Echo "Contact Info-ZIP authors at Zip-Bugs@lists.wku.edu or me for help."
         @Echo "Haidinger Walter, <walthaid@unix.ict.tuwien.ac.at>"
-

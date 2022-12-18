@@ -1,6 +1,9 @@
-@rename zipfile.c zipfil.c
+@rename envargs.c envarg.c
+@rename explode.c explod.c
+@rename extract.c extrac.c
 @rename globals.c global.c
-@rename deflate.c deflat.c
-@rename zipnote.c zipnot.c
-@rename zipsplit.c zipspl.c
+@rename inflate.c inflat.c
+@rename unreduce.c unredu.c
+@rename unshrink.c unshri.c
+@rename zipinfo.c zipinf.c
 @kmic

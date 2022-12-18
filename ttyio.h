@@ -1,9 +1,7 @@
 /*
-  ttyio.h - Zip 3
+  Copyright (c) 1990-2001 Info-ZIP.  All rights reserved.
 
-  Copyright (c) 1990-2005 Info-ZIP.  All rights reserved.
-
-  See the accompanying file LICENSE, version 2005-Feb-10 or later
+  See the accompanying file LICENSE, version 2000-Apr-09 or later
   (the contents of which are also included in zip.h) for terms of use.
   If, for some reason, all these files are missing, the Info-ZIP license
   also may be found at:  ftp://ftp.info-zip.org/pub/infozip/license.html
@@ -57,12 +55,6 @@
 #if (defined(DOS_H68_OS2_W32) || defined(FLEXOS))
 #  ifndef DOS_FLX_H68_OS2_W32
 #    define DOS_FLX_H68_OS2_W32
-#  endif
-#endif
-
-#if (defined(__ATHEOS__) || defined(__BEOS__) || defined(UNIX))
-#  ifndef ATH_BEO_UNX
-#    define ATH_BEO_UNX
 #  endif
 #endif
 

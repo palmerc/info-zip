@@ -1,137 +1,182 @@
-# Makefile for Zip, ZipCloak, ZipNote and ZipSplit for
-# THEOS ANSI C
-# To use, do "make -f theos/makefile"
-# This make file uses cl, a C compiler and linker driver written by
-# Jean-Michel Dubois. Send a mail to jmdubois@ibcfrance.fr to get it for free.
-# MAINWA_BUG    Workaround argument expansion failure
-# LOCATE_BUG    Workaround stat, fopen and open failure on relative paths to
-#               root dir.
+#==============================================================================
+# Makefile for UnZip, UnZipSFX and fUnZip:  Unix and MS-DOS ("real" makes only)
+# Version:  5.5                                                13 February 2001
+#==============================================================================
 
-CC=cl
-CFLAGS=-Zi -W3 -DDYN_ALLOC -DCRYPT -DMAINWA_BUG -DLOCATE_BUG
-LD=cl -o
-LDFLAGS=-m -Zi
-AS=cc
-ASFLAGS=
 
-UTILFLAGS=-DUTIL $(CFLAGS) -Fo
+# INSTRUCTIONS (such as they are):
+#
+# "make vax"	-- makes UnZip on a generic Unix VAX in the current directory
+# "make list"	-- lists all supported systems (targets)
+# "make help"	-- provides pointers on what targets to try if problems occur
+# "make wombat" -- chokes and dies if you haven't added the specifics for your
+#		    Wombat 68000 (or whatever) to the systems list
+#
+# CF are flags for the C compiler.  LF are flags for the loader.  LF2 are more
+# flags for the loader, if they need to be at the end of the line instead of at
+# the beginning (for example, some libraries).  FL and FL2 are the corre-
+# sponding flags for fUnZip.  LOCAL_UNZIP is an environment variable that can
+# be used to add default C flags to your compile without editing the Makefile
+# (e.g., -DDEBUG_STRUC, or -FPi87 on PCs using Microsoft C).
+#
+# Some versions of make do not define the macro "$(MAKE)"; this is rare, but
+# if things don't work, try using "make" instead of "$(MAKE)" in your system's
+# makerule.  Or try adding the following line to your .login file:
+#	setenv MAKE "make"
+# (That never works--makes which are too stupid to define MAKE are also too
+# stupid to look in the environment--but try it anyway for kicks. :-) )
+#
+# Memcpy and memset are provided for those systems that don't have them; they
+# are in file_io.c and will be used if -DZMEM is included in CF.  These days
+# almost all systems have them.
+#
+# Be sure to test your new UnZip (and UnZipSFX and fUnZip); successful compila-
+# tion does not always imply a working program.
 
-# variables
 
-# object file lists
-OBJZ = zip.o zipfile.o zipup.o fileio.o util.o globals.o crypt.o ttyio.o \
-       theos.o crc32.o _fprintf.o _stat.o _chmod.o _isatty.o \
-       _setargv.o _rename.o
-OBJI = deflate.o trees.o
-OBJA =
-OBJU = zipfile_.o fileio_.o util_.o globals.o theos_.o _rename.o _stat.o \
-       _chmod.o _fprintf.o
-OBJN = zipnote.o  $(OBJU)
-OBJC = zipcloak.o $(OBJU) crc32_.o crypt_.o ttyio.o
-OBJS = zipsplit.o $(OBJU)
+#####################
+# MACRO DEFINITIONS #
+#####################
 
-OSDEP_H = theos/osdep.h
-ZIP_H = zip.h ziperr.h tailor.h $(OSDEP_H)
+# Defaults most systems use (use LOCAL_UNZIP in environment to add flags,
+# such as -DDOSWILD).
 
-ZIPS = zip.command zipnote.command zipsplit.command zipcloak.command
+# UnZip flags
+CC = cl
+LD = cl
+LOC = $(LOCAL_UNZIP)
+CF = -c -Zi -W2 -DCRYPT -DOLD_THEOS_EXTRA $(LOCAL_UNZIP)
+LF = -Zi -o
+LF2 = -m
 
-zips:	$(ZIPS)
+# defaults for crc32 stuff and system dependent headers
+CRC32 = crc32
+OSDEP_H =
 
-zip.o:	zip.c $(ZIP_H) crc32.h crypt.h ttyio.h revision.h
-	$(CC) -c $(CFLAGS) $*.c
+# general-purpose stuff
+CP = copyfile
+LN = copyfile
+RM = erase
 
-zipfile.o:	zipfile.c $(ZIP_H) crc32.h
-	$(CC) -c $(CFLAGS) $*.c
+.c.o:
+	$(CC) $(CF) $*.c
 
-zipup.o:	zipup.c $(ZIP_H) revision.h crc32.h crypt.h
-	$(CC) -c $(CFLAGS) $*.c
+# object files
+OBJS1 = unzip.o $(CRC32).o crctab.o crypt.o envargs.o explode.o
+OBJS2 = extract.o fileio.o globals.o inflate.o list.o match.o
+OBJS3 = process.o ttyio.o unreduce.o unshrink.o zipinfo.o
+OBJS4 = _sprintf.o _fprintf.o _isatty.o _stat.o _setargv.o
+OBJS = $(OBJS1) $(OBJS2) $(OBJS3) $(OBJS4) theos.o
+#LOBJS = $(OBJS)
+LOBJS = $(OBJS1) $(OBJS2) $(OBJS3) theos.o
+OBJX = unzipsfx.o $(CRC32).o crctab_.o crypt_.o extract_.o fileio_.o \
+	globals_.o inflate_.o match_.o process_.o ttyio_.o theos_.o
+LOBJX = $(OBJX)
+OBJF = funzip.o $(CRC32).o cryptf.o globalsf.o inflatef.o ttyiof.o _sprintf.o \
+       _fprintf.o _isatty.o
+UNZIP_H = unzip.h unzpriv.h globals.h $(OSDEP_H)
 
-fileio.o:	fileio.c $(ZIP_H) crc32.h
-	$(CC) -c $(CFLAGS) $*.c
+UNZIPS = unzip.command funzip.command unzipsfx.command zipinfo.command
 
-util.o:	util.c $(ZIP_H) theos/charconv.h
-	$(CC) -c $(CFLAGS) $*.c
+unzips:	$(UNZIPS)
 
-globals.o:	globals.c $(ZIP_H)
-	$(CC) -c $(CFLAGS) $*.c
 
-crc32.o:	crc32.c $(ZIP_H) crc32.h
-	$(CC) -c $(CFLAGS) $*.c
+crc32.o:	crc32.c $(UNZIP_H) zip.h
+crctab.o:	crctab.c $(UNZIP_H) zip.h
+crypt.o:	crypt.c $(UNZIP_H) zip.h crypt.h ttyio.h
+envargs.o:	envargs.c $(UNZIP_H)
+explode.o:	explode.c $(UNZIP_H)
+extract.o:	extract.c $(UNZIP_H) crypt.h
+fileio.o:	fileio.c $(UNZIP_H) crypt.h ttyio.h ebcdic.h
+funzip.o:	funzip.c $(UNZIP_H) crypt.h ttyio.h tables.h
+globals.o:	globals.c $(UNZIP_H)
+inflate.o:	inflate.c inflate.h $(UNZIP_H)
+list.o:		list.c $(UNZIP_H)
+match.o:	match.c $(UNZIP_H)
+process.o:	process.c $(UNZIP_H)
+ttyio.o:	ttyio.c $(UNZIP_H) zip.h crypt.h ttyio.h
+unreduce.o:	unreduce.c $(UNZIP_H)
+unshrink.o:	unshrink.c $(UNZIP_H)
+unzip.o:	unzip.c $(UNZIP_H) crypt.h unzvers.h consts.h
+zipinfo.o:	zipinfo.c $(UNZIP_H)
 
-deflate.o:	deflate.c $(ZIP_H)
-	$(CC) -c $(CFLAGS) $*.c
+crctab_.o:	crctab.c $(UNZIP_H) zip.h			# unzipsfx only
+	$(CC) $(CF) -DSFX -Fo$@ crctab.c
 
-trees.o:	trees.c $(ZIP_H)
-	$(CC) -c $(CFLAGS) $*.c
+crypt_.o:	crypt.c $(UNZIP_H) zip.h crypt.h ttyio.h	# unzipsfx only
+	$(CC) $(CF) -DSFX -Fo$@ crypt.c
 
-crypt.o:	crypt.c $(ZIP_H) crc32.h crypt.h
-	$(CC) -c $(CFLAGS) $*.c
+extract_.o:	extract.c $(UNZIP_H) crypt.h			# unzipsfx only
+	$(CC) $(CF) -DSFX -Fo$@ extract.c
 
-theos.o:	theos/theos.c $(ZIP_H)
-	$(CC) -c $(CFLAGS) -Fo$@ theos/theos.c
+fileio_.o:	fileio.c $(UNZIP_H) crypt.h ttyio.h ebcdic.h	# unzipsfx only
+	$(CC) $(CF) -DSFX -Fo$@ fileio.c
 
-_fprintf.o:	theos/_fprintf.c
-	$(CC) -c $(CFLAGS) -Fo$@ theos/_fprintf.c
+globals_.o:	globals.c $(UNZIP_H)				# unzipsfx only
+	$(CC) $(CF) -DSFX -Fo$@ globals.c
 
-_stat.o:	theos/_stat.c
-	$(CC) -c $(CFLAGS) -Fo$@ theos/_stat.c
+inflate_.o:	inflate.c inflate.h $(UNZIP_H) crypt.h		# unzipsfx only
+	$(CC) $(CF) -DSFX -Fo$@ inflate.c
 
-_chmod.o:	theos/_chmod.c
-	$(CC) -c $(CFLAGS) -Fo$@ theos/_chmod.c
+match_.o:	match.c $(UNZIP_H)				# unzipsfx only
+	$(CC) $(CF) -DSFX -Fo$@ match.c
 
-_isatty.o:	theos/_isatty.c
-	$(CC) -c $(CFLAGS) -Fo$@ theos/_isatty.c
+process_.o:	process.c $(UNZIP_H)				# unzipsfx only
+	$(CC) $(CF) -DSFX -Fo$@ process.c
 
-_rename.o:	theos/_rename.c
-	$(CC) -c $(CFLAGS) -Fo$@ theos/_rename.c
+ttyio_.o:	ttyio.c $(UNZIP_H) zip.h crypt.h ttyio.h	# unzipsfx only
+	$(CC) $(CF) -DSFX -Fo$@ ttyio.c
 
-_setargv.o:	theos/_setargv.c
-	$(CC) -c $(CFLAGS) -Fo$@ theos/_setargv.c
+unzipsfx.o:	unzip.c $(UNZIP_H) crypt.h unzvers.h consts.h	# unzipsfx only
+	$(CC) $(CF) -DSFX -Fo$@ unzip.c
 
-ttyio.o:	$(ZIP_H) ttyio.h ttyio.c
-	$(CC) -c $(CFLAGS) $*.c
+cryptf.o:	crypt.c $(UNZIP_H) zip.h crypt.h ttyio.h	# funzip only
+	$(CC) $(CF) -DFUNZIP -Fo$@ crypt.c
 
-zipcloak.o:	zipcloak.c $(ZIP_H) crc32.h crypt.h ttyio.h revision.h
-	$(CC) -c $(CFLAGS) $*.c
+globalsf.o:	globals.c $(UNZIP_H)				# funzip only
+	$(CC) $(CF) -DFUNZIP -Fo$@ globals.c
 
-zipnote.o:	zipnote.c $(ZIP_H) revision.h
-	$(CC) -c $(CFLAGS) $*.c
+inflatef.o:	inflate.c inflate.h $(UNZIP_H) crypt.h		# funzip only
+	$(CC) $(CF) -DFUNZIP -Fo$@ inflate.c
 
-zipsplit.o:	$(ZIP_H) revision.h
-	$(CC) -c $(CFLAGS) $*.c
+ttyiof.o:	ttyio.c $(UNZIP_H) zip.h crypt.h ttyio.h	# funzip only
+	$(CC) $(CF) -DFUNZIP -Fo$@ ttyio.c
 
-zipfile_.o:	zipfile.c $(ZIP_H) crc32.h
-	$(CC) -c $(UTILFLAGS)$@ zipfile.c
+theos.o:	theos/theos.c $(UNZIP_H) unzvers.h		# THEOS only
+	$(CC) $(CF) theos/theos.c
 
-fileio_.o:	fileio.c $(ZIP_H) crc32.h
-	$(CC) -c $(UTILFLAGS)$@ fileio.c
+theos_.o:	theos/theos.c $(UNZIP_H)			# THEOS unzipsfx
+	$(CC) $(CF) -DSFX -Fo$@ theos/theos.c
 
-theos_.o:	theos/theos.c $(ZIP_H)
-	$(CC) -c $(UTILFLAGS)$@ theos/theos.c
+_sprintf.o:	theos/_sprintf.c $(UNZIP_H)			# THEOS only
+	$(CC) $(CF) theos/_sprintf.c
 
-util_.o:	util.c $(ZIP_H)
-	$(CC) -c $(UTILFLAGS)$@ util.c
+_fprintf.o:	theos/_fprintf.c $(UNZIP_H)			# THEOS only
+	$(CC) $(CF) theos/_fprintf.c
 
-crc32_.o:	crc32.c $(ZIP_H) crc32.h
-	$(CC) -c $(UTILFLAGS)$@ $*.c
+_isatty.o:	theos/_isatty.c $(UNZIP_H)			# THEOS only
+	$(CC) $(CF) theos/_isatty.c
 
-crypt_.o:	crypt.c $(ZIP_H) crc32.h crypt.h
-	$(CC) -c $(UTILFLAGS)$@ crypt.c
+_stat.o:	theos/_stat.c $(UNZIP_H)			# THEOS only
+	$(CC) $(CF) theos/_stat.c
 
-zip.command: $(OBJZ) $(OBJI)
-	$(LD) $@ $(OBJZ) $(OBJI) $(LDFLAGS)
+_setargv.o:	theos/_setargv.c $(UNZIP_H)			# THEOS only
+	$(CC) $(CF) theos/_setargv.c
 
-zipcloak.command: $(OBJC)
-	$(LD) $@ $(OBJC) $(LDFLAGS)
+unzip.command:	$(OBJS)
+	$(LD) $(LF) $@ $(LOBJS) $(LF2)
 
-zipnote.command: $(OBJN)
-	$(LD) $@ $(OBJN) $(LDFLAGS)
+unzipsfx.command:	$(OBJX)
+	$(LD) $(LF) $@ $(LOBJX) $(LF2)
 
-zipsplit.command: $(OBJS)
-	$(LD) $@ $(OBJS) $(LDFLAGS)
+funzip.command:	$(OBJF)
+	$(LD) $(LF) $@ $(OBJF) $(LF2)
 
-install:	$(ZIPS)
-	copy *.command /system.cmd32.=(rep noq not
+zipinfo.command:	unzip.command
+	$(LN) $? $@ ( rep not
+
+install:
+	copy *.command /system.cmd32.=(rep noq
 
 clean:
 	erase *.o(noq not

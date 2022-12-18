@@ -1,16 +1,40 @@
 /*
-  Copyright (c) 1990-1999 Info-ZIP.  All rights reserved.
+  Copyright (c) 1990-2003 Info-ZIP.  All rights reserved.
 
-  See the accompanying file LICENSE, version 1999-Oct-05 or later
-  (the contents of which are also included in zip.h) for terms of use.
-  If, for some reason, both of these files are missing, the Info-ZIP license
-  also may be found at:  ftp://ftp.cdrom.com/pub/infozip/license.html
+  See the accompanying file LICENSE, version 2000-Apr-09 or later
+  (the contents of which are also included in unzip.h) for terms of use.
+  If, for some reason, all these files are missing, the Info-ZIP license
+  also may be found at:  ftp://ftp.info-zip.org/pub/infozip/license.html
 */
 /*---------------------------------------------------------------------------
 
   macos.c
 
-  Macintosh-specific routines for use with Info-ZIP's Zip 2.3 and later.
+  Macintosh-specific routines for use with Info-ZIP's UnZip 5.4 and later.
+
+  Contains:
+                    do_wild ()
+                    mapattr ()
+                    checkdir ()
+                    version ()
+                    macmkdir ()
+                    macopen ()
+                    maccreat ()
+                    macread ()
+                    macwrite ()
+                    macclose ()
+                    maclseek ()
+                    BuildMacFilename()
+                    SetFinderInfo ()
+                    isMacOSexfield ()
+                    makePPClong ()
+                    makePPCword ()
+                    PrintMacExtraInfo ()
+                    GetExtraFieldData ()
+                    DecodeMac3ExtraField ()
+                    DecodeJLEEextraField ()
+                    PrintTextEncoding ()
+                    MacGlobalsInit ()
 
   ---------------------------------------------------------------------------*/
 
@@ -19,50 +43,41 @@
 /*  Includes                                                                 */
 /*****************************************************************************/
 
-#include "zip.h"
+#define UNZIP_INTERNAL
+#include "unzip.h"
 
-#include "revision.h"
-#include "crypt.h"
-
-#include <signal.h>
-#include <stdio.h>
-#include <stdlib.h>
+#include <script.h>
 #include <sound.h>
 
-#include <unistd.h>
-
-#include <Strings.h>
-#include <setjmp.h>
-
-/* #include "charmap.h" */
+#include "pathname.h"
 #include "helpers.h"
 #include "macstuff.h"
-#include "pathname.h"
-#include "recurse.h"
-
+#include "mactime.h"
+#include "macbin3.h"
 
 /*****************************************************************************/
 /*  Macros, typedefs                                                         */
 /*****************************************************************************/
 
-#define PATH_END   MacPathEnd
+/* disable ZipIt support
+#define SwitchZIPITefSupportOff */
+
+#define read_only   file_attr       /* for readability only */
+#define EB_MAX_OF_VARDATA   1300    /* max possible datasize of extra-field */
+
 
 /*****************************************************************************/
 /*  Global Vars                                                              */
 /*****************************************************************************/
 
-int error_level;   /* used only in ziperr() */
-
-
 /*  Note: sizeof() returns the size of this allusion
           13 is current length of "XtraStuf.mac:"      */
 extern const char ResourceMark[13]; /* var is initialized in file pathname.c */
 
+Boolean MacUnzip_Noisy;            /* MacUnzip_Noisy is also used by console */
 
-extern jmp_buf EnvForExit;
-MacZipGlobals   MacZip;
-
-unsigned long count_of_Zippedfiles = 0;
+MACINFO newExtraField;  /* contains all extra-field data */
+short MacZipMode;
 
 
 /*****************************************************************************/
@@ -71,166 +86,860 @@ unsigned long count_of_Zippedfiles = 0;
 
 static const char MacPathEnd = ':';   /* the Macintosh dir separator */
 
-/*  Inform Progress vars */
-long    estTicksToFinish;
-long    createTime;
-long    updateTicks;
+static int created_dir;        /* used in mapname(), checkdir() */
+static int renamed_fullpath;   /* ditto */
+static FSSpec CurrentFile;
 
-static char *Time_Est_strings[] = {
-        "Zipping Files; Items done:",
-        "More than 24 hours",
-        "More than %s hours",
-        "About %s hours, %s minutes",
-        "About an hour",
-        "Less than an hour",
-        "About %s minutes, %s seconds",
-        "About a minute",
-        "Less than a minute",
-        "About %s seconds",
-        "About a second",
-        "About 1 minute, %s seconds"};
+static Boolean OpenZipFile = true;
+static Boolean UseUT_ExtraField     = false;
+static Boolean IgnoreEF_Macfilename = false;
+static short fileSystemID;
 
+static uch *attrbuff = NULL;
+static uch *malloced_attrbuff = NULL;
 
+const short HFS_fileSystem = 0;
 
 /*****************************************************************************/
 /*  Prototypes                                                               */
 /*****************************************************************************/
 
-int DoCurrentDir(void);
+extern char *GetUnZipInfoVersions(void);
 
-void DoAboutBox(void);
-void DoQuit(void);
-void DoEventLoop(void);
+static OSErr SetFinderInfo(FSSpec *spec, MACINFO *mi);
+static Boolean GetExtraFieldData(short *MacZipMode, MACINFO *mi);
+static uch *scanMacOSexfield(uch *ef_ptr, unsigned ef_len,
+                             short *MacZipMode);
+static Boolean isMacOSexfield(unsigned id, unsigned size, short *MacZipMode);
+static void PrintMacExtraInfo(MACINFO *mi);
+static OSErr SetFileTime(void);
+static void DecodeMac3ExtraField(ZCONST uch *buff, MACINFO *mi);
+static void DecodeJLEEextraField(ZCONST uch *buff, MACINFO *mi);
+static void DecodeZPITextraField(ZCONST uch *buff, MACINFO *mi);
+static char *PrintTextEncoding(short script);
+static void BuildMacFilename(void);
 
-void ZipInitAllVars(void);
-void UserStop(void);
-Boolean IsZipFile(char *name);
+/*****************************************************************************/
+/*  Constants (strings, etc.)                                                */
+/*****************************************************************************/
 
-static long EstimateCompletionTime(const long progressMax,
-                            const long progressSoFar, unsigned char percent);
-static void UpdateTimeToComplete(void);
+static ZCONST char Far CannotCreateFile[] = "error:  cannot create %s\n";
 
+static ZCONST char Far OutOfMemEF[] = "Can't allocate memory to uncompress"\
+                                      " file attributes.\n";
 
+static ZCONST char Far ErrUncmpEF[] = "Error uncompressing file attributes.\n";
 
+static ZCONST char Far No64Time[]   = "Don't support 64 bit Timevalues; get "\
+                                      " a newer version of MacZip \n";
 
-#ifdef USE_SIOUX
-#include <sioux.h>
-void DoWarnUserDupVol( char *FullPath );
+static ZCONST char Far NoUniCode[]  = "Don't support Unicoded Filenames; get"\
+                                      " a newer version of MacZip\n";
+
+static ZCONST char Far ZitIt_EF[]   = "warning: found ZipIt extra field  "\
+                                      " -> file is probably not "\
+                                      "usable!!\n";
+
+static ZCONST char Far CantAllocateWildcard[] =
+    "warning:  cannot allocate wildcard buffers\n";
+
+static ZCONST char Far ErrNoTimeSet[] = "error (%d): cannot set the time for"\
+                                        " %s\n";
+
+static ZCONST char Far MacBinaryMsg[] = "\n   ... decoding MacBinary ";
+
+static ZCONST char Far WarnDirTraversSkip[] =
+  "warning:  skipped \"../\" path component(s) in %s\n";
+
+static ZCONST char Far Creating[] = "   creating: %s\n";
+
+static ZCONST char Far ConversionFailed[] =
+  "mapname:  conversion of %s failed\n";
+
+static ZCONST char Far PathTooLong[] = "checkdir error:  path too long: %s\n";
+
+static ZCONST char Far CantCreateDir[] = "checkdir error:  cannot create %s\n\
+                 unable to process %s.\n";
+
+static ZCONST char Far DirIsntDirectory[] =
+  "checkdir error:  %s exists but is not directory\n\
+                 unable to process %s.\n";
+
+static ZCONST char Far PathTooLongTrunc[] =
+  "checkdir warning:  path too long; truncating\n                   %s\n\
+                -> %s\n";
+
+static ZCONST char Far CantCreateExtractDir[] =
+  "checkdir:  cannot create extraction directory: %s\n";
+
+static ZCONST char Far FilenameToLong[] =
+  "Filename is to long; truncated: %s\n";
 
 /*****************************************************************************/
 /*  Functions                                                                */
 /*****************************************************************************/
 
-/*
-** Standalone Unzip with Metrowerks SIOUX starts here
-**
-*/
-int main(int argc, char **argv)
+#ifndef SFX
+
+/**********************/
+/* Function do_wild() */   /* for porting:  dir separator; match(ignore_case) */
+/**********************/
+
+char *do_wild(__G__ wildspec)
+    __GDEF
+    ZCONST char *wildspec;  /* only used first time on a given dir */
 {
-    int return_code;
+    static DIR *wild_dir = (DIR *)NULL;
+    static ZCONST char *wildname;
+    static char *dirname, matchname[FILNAMSIZ];
+    static int notfirstcall=FALSE, have_dirname;
+    static unsigned long dirnamelen;
+    struct dirent *file;
 
-    SIOUXSettings.asktosaveonclose = FALSE;
-    SIOUXSettings.showstatusline = TRUE;
+    /* Even when we're just returning wildspec, we *always* do so in
+     * matchname[]--calling routine is allowed to append four characters
+     * to the returned string, and wildspec may be a pointer to argv[].
+     */
+    if (!notfirstcall) {    /* first call:  must initialize everything */
+        notfirstcall = TRUE;
 
-    SIOUXSettings.columns = 100;
-    SIOUXSettings.rows    = 40;
+        /* Folder names must always end with a colon */
+        if (uO.exdir[strlen(uO.exdir)-1] != ':') {
+            strcat(uO.exdir, ":");
+        }
 
-    /* 30 = MacZip Johnny Lee's; 40 = new (my) MacZip */
-    MacZip.MacZipMode = NewZipMode_EF;
+        MacUnzip_Noisy = !uO.qflag;
 
-    argc = ccommand(&argv);
-    if (verbose) PrintArguments(argc, argv);
+        if (MacUnzip_Noisy) printf("%s \n\n", GetUnZipInfoVersions());
 
-    ZipInitAllVars();
+        /* break the wildspec into a directory part and a wildcard filename */
+        if ((wildname = strrchr(wildspec, ':')) == (ZCONST char *)NULL) {
+            dirname = ":";
+            dirnamelen = 1;
+            have_dirname = FALSE;
+            wildname = wildspec;
+        } else {
+            ++wildname;     /* point at character after ':' */
+            dirnamelen = wildname - wildspec;
+            if ((dirname = (char *)malloc(dirnamelen+1)) == (char *)NULL) {
+                Info(slide, 0x201, ((char *)slide,
+                  LoadFarString(CantAllocateWildcard)));
+                strcpy(matchname, wildspec);
+                return matchname;   /* but maybe filespec was not a wildcard */
+            }
+            strncpy(dirname, wildspec, dirnamelen);
+            dirname[dirnamelen] = '\0';   /* terminate for strcpy below */
+            have_dirname = TRUE;
+        }
 
-    return_code = zipmain(argc, argv);
+        if ((wild_dir = opendir(dirname)) != (DIR *)NULL) {
+            while ((file = readdir(wild_dir)) != (struct dirent *)NULL) {
+                if (match(file->d_name, wildname, 0)) {  /* 0 == case sens. */
+                    if (have_dirname) {
+                        strcpy(matchname, dirname);
+                        strcpy(matchname+dirnamelen, file->d_name);
+                    } else
+                        strcpy(matchname, file->d_name);
+                    return matchname;
+                }
+            }
+            /* if we get to here directory is exhausted, so close it */
+            closedir(wild_dir);
+            wild_dir = (DIR *)NULL;
+        }
 
-    if (verbose) printf("\n\n Finish");
-    return return_code;
-}
+        /* return the raw wildspec in case that works (e.g., directory not
+         * searchable, but filespec was not wild and file is readable) */
+        strcpy(matchname, wildspec);
+        return matchname;
+    }
+
+    /* last time through, might have failed opendir but returned raw wildspec */
+    if (wild_dir == (DIR *)NULL) {
+        notfirstcall = FALSE; /* nothing left to try--reset for new wildspec */
+        if (have_dirname)
+            free(dirname);
+        return (char *)NULL;
+    }
+
+    /* If we've gotten this far, we've read and matched at least one entry
+     * successfully (in a previous call), so dirname has been copied into
+     * matchname already.
+     */
+    while ((file = readdir(wild_dir)) != (struct dirent *)NULL)
+        if (match(file->d_name, wildname, 0)) {   /* 0 == don't ignore case */
+            if (have_dirname) {
+                /* strcpy(matchname, dirname); */
+                strcpy(matchname+dirnamelen, file->d_name);
+            } else
+                strcpy(matchname, file->d_name);
+            return matchname;
+        }
+
+    closedir(wild_dir);     /* have read at least one entry; nothing left */
+    wild_dir = (DIR *)NULL;
+    notfirstcall = FALSE;   /* reset for new wildspec */
+    if (have_dirname)
+        free(dirname);
+    return (char *)NULL;
+
+} /* end function do_wild() */
+
+#endif /* !SFX */
 
 
 
-/*
-** SIOUX needs no extra event handling
-**
-*/
 
-void UserStop(void)
+
+/***************************/
+/* Function open_outfile() */
+/***************************/
+
+int open_outfile(__G)         /* return 1 if fail */
+    __GDEF
 {
-};
+    short outfd, fDataFork = true;
+
+#ifdef DLL
+    if (G.redirect_data)
+        return (redirect_outfile(__G) == FALSE);
+#endif
+    Trace((stderr, "open_outfile:  trying to open (%s) for writing\n",
+      FnFilter1(G.filename)));
+
+    if (!uO.aflag) {
+         /* unknown type documents */
+         /* all files are considered to be of type 'TEXT' and creator 'hscd' */
+         /* this is the default type for CDROM ISO-9660 without Apple extensions */
+        newExtraField.fpb.hFileInfo.ioFlFndrInfo.fdType    =  'TEXT';
+        newExtraField.fpb.hFileInfo.ioFlFndrInfo.fdCreator =  'hscd';
+    } else {
+     /* unknown text-files defaults to 'TEXT' */
+        newExtraField.fpb.hFileInfo.ioFlFndrInfo.fdType    =  'TEXT';
+     /* Bare Bones BBEdit */
+        newExtraField.fpb.hFileInfo.ioFlFndrInfo.fdCreator =  'R*ch';
+    }
+
+    BuildMacFilename();
+
+    if  (MacZipMode <= TomBrownZipIt2_EF)
+        {
+        fDataFork = true;
+        }
+    else
+        {
+        fDataFork = (newExtraField.flags & EB_M3_FL_DATFRK) ? TRUE : FALSE;
+        }
+
+
+    if ((outfd = maccreat(G.filename)) != -1) {
+        outfd = macopen(G.filename, (fDataFork) ? 1 : 2);
+    }
+
+    if (outfd == -1) {
+        G.outfile = (FILE *)NULL;
+        Info(slide, 0x401, ((char *)slide, LoadFarString(CannotCreateFile),
+          FnFilter1(G.filename)));
+        return 1;
+    }
+    G.outfile = (FILE *)outfd;
+    Trace((stderr, "open_outfile:  successfully opened (%s) for writing\n",
+      FnFilter1(G.filename)));
+
+    return 0;
+
+} /* end function open_outfile() */
 
 
 
 
-/*
-** Password enter function '*' printed for each char
-**
-*/
 
-int macgetch(void)
+/**********************/
+/* Function mapattr() */
+/**********************/
+
+int mapattr(__G)
+    __GDEF
 {
-    WindowPtr whichWindow;
-    EventRecord theEvent;
-    char c;                     /* one-byte buffer for read() to use */
+    /* only care about read-only bit, so just look at MS-DOS side of attrs */
+    G.pInfo->read_only = (unsigned)(G.crec.external_file_attributes & 1);
+    return 0;
 
-    do {
-        SystemTask();
-        if (!GetNextEvent(everyEvent, &theEvent))
-            theEvent.what = nullEvent;
-        else {
-            switch (theEvent.what) {
-            case keyDown:
-                c = theEvent.message & charCodeMask;
+} /* end function mapattr() */
+
+
+
+
+
+/************************/
+/*  Function mapname()  */
+/************************/
+
+int mapname(__G__ renamed)
+    __GDEF
+    int renamed;
+/*
+ * returns:
+ *  MPN_OK          - no problem detected
+ *  MPN_INF_TRUNC   - caution (truncated filename)
+ *  MPN_INF_SKIP    - info "skip entry" (dir doesn't exist)
+ *  MPN_ERR_SKIP    - error -> skip entry
+ *  MPN_ERR_TOOLONG - error -> path is too long
+ *  MPN_NOMEM       - error (memory allocation failed) -> skip entry
+ *  [also MPN_VOL_LABEL, MPN_CREATED_DIR]
+ */
+{
+    char pathcomp[FILNAMSIZ];      /* path-component buffer */
+    char *pp, *cp=(char *)NULL;    /* character pointers */
+    char *lastsemi=(char *)NULL;   /* pointer to last semi-colon in pathcomp */
+    int killed_ddot = FALSE;       /* is set when skipping "../" pathcomp */
+    int error = MPN_OK;
+    register unsigned workch;      /* hold the character being tested */
+
+
+/*---------------------------------------------------------------------------
+    Initialize various pointers and counters and stuff.
+  ---------------------------------------------------------------------------*/
+
+    if (G.pInfo->vollabel)
+        return MPN_VOL_LABEL;   /* can't set disk volume labels on Macintosh */
+
+    /* can create path as long as not just freshening, or if user told us */
+    G.create_dirs = (!uO.fflag || renamed);
+
+    created_dir = FALSE;        /* not yet */
+
+    /* user gave full pathname:  don't prepend rootpath */
+    renamed_fullpath = (renamed && (*G.filename == '/'));
+
+    if (checkdir(__G__ (char *)NULL, INIT) == MPN_NOMEM)
+        return MPN_NOMEM;       /* initialize path buffer, unless no memory */
+
+    *pathcomp = '\0';           /* initialize translation buffer */
+    pp = pathcomp;              /* point to translation buffer */
+
+    if (uO.jflag)               /* junking directories */
+        cp = (char *)strrchr(G.filename, '/');
+    if (cp == (char *)NULL) {   /* no '/' or not junking dirs */
+        cp = G.filename;        /* point to internal zipfile-member pathname */
+        if (renamed_fullpath)
+            ++cp;               /* skip over leading '/' */
+    } else
+        ++cp;                   /* point to start of last component of path */
+
+/*---------------------------------------------------------------------------
+    Begin main loop through characters in filename.
+  ---------------------------------------------------------------------------*/
+
+    while ((workch = (uch)*cp++) != 0) {
+
+        switch (workch) {
+            case '/':             /* can assume -j flag not given */
+                *pp = '\0';
+                if (strcmp(pathcomp, ".") == 0) {
+                    /* don't bother appending "./" to the path */
+                    *pathcomp = '\0';
+                } else if (!uO.ddotflag && strcmp(pathcomp, "..") == 0) {
+                    /* "../" dir traversal detected, skip over it */
+                    *pathcomp = '\0';
+                    killed_ddot = TRUE;     /* set "show message" flag */
+                }
+                /* when path component is not empty, append it now */
+                if (*pathcomp != '\0' &&
+                    ((error = checkdir(__G__ pathcomp, APPEND_DIR))
+                     & MPN_MASK) > MPN_INF_TRUNC)
+                    return error;
+                pp = pathcomp;    /* reset conversion buffer for next piece */
+                lastsemi = (char *)NULL; /* leave direct. semi-colons alone */
                 break;
-            case mouseDown:
-                if (FindWindow(theEvent.where, &whichWindow) ==
-                    inSysWindow)
-                    SystemClick(&theEvent, whichWindow);
+
+            case ':':
+                *pp++ = '/';      /* ':' is a pathseperator for HFS  */
                 break;
-            case updateEvt:
+
+            case ';':             /* VMS version (or DEC-20 attrib?) */
+                lastsemi = pp;         /* keep for now; remove VMS ";##" */
+                *pp++ = (char)workch;  /*  later, if requested */
                 break;
+
+            default:
+                /* allow European characters in filenames: */
+                if (isprint(workch) || (128 <= workch && workch <= 254))
+                    *pp++ = (char)workch;
+        } /* end switch */
+
+    } /* end while loop */
+
+    /* Show warning when stripping insecure "parent dir" path components */
+    if (killed_ddot && QCOND2) {
+        Info(slide, 0, ((char *)slide, LoadFarString(WarnDirTraversSkip),
+          FnFilter1(G.filename)));
+        if (!(error & ~MPN_MASK))
+            error = (error & MPN_MASK) | PK_WARN;
+    }
+
+/*---------------------------------------------------------------------------
+    Report if directory was created (and no file to create:  filename ended
+    in '/'), check name to be sure it exists, and combine path and name be-
+    fore exiting.
+  ---------------------------------------------------------------------------*/
+
+    if (G.filename[strlen(G.filename) - 1] == '/') {
+        checkdir(__G__ G.filename, GETPATH);
+        if (created_dir) {
+            if (QCOND2) {
+                Info(slide, 0, ((char *)slide, LoadFarString(Creating),
+                  FnFilter1(G.filename)));
+            }
+            /* set dir time (note trailing '/') */
+            return (error & ~MPN_MASK) | MPN_CREATED_DIR;
+        }
+        /* dir existed already; don't look for data to extract */
+        return (error & ~MPN_MASK) | MPN_INF_SKIP;
+    }
+
+    *pp = '\0';                   /* done with pathcomp:  terminate it */
+
+    /* if not saving them, remove VMS version numbers (appended ";###") */
+    if (!uO.V_flag && lastsemi) {
+        pp = lastsemi + 1;
+        while (isdigit((uch)(*pp)))
+            ++pp;
+        if (*pp == '\0')          /* only digits between ';' and end:  nuke */
+            *lastsemi = '\0';
+    }
+
+    if (*pathcomp == '\0') {
+        Info(slide, 1, ((char *)slide, LoadFarString(ConversionFailed),
+          FnFilter1(G.filename)));
+        return (error & ~MPN_MASK) | MPN_ERR_SKIP;
+    }
+
+    checkdir(__G__ pathcomp, APPEND_NAME);  /* returns 1 if truncated: care? */
+    checkdir(__G__ G.filename, GETPATH);
+
+    return error;
+
+} /* end function mapname() */
+
+
+
+
+
+/***********************/
+/* Function checkdir() */
+/***********************/
+
+int checkdir(__G__ pathcomp, flag)
+    __GDEF
+    char *pathcomp;
+    int flag;
+/*
+ * returns:
+ *  MPN_OK          - no problem detected
+ *  MPN_INF_TRUNC   - (on APPEND_NAME) truncated filename
+ *  MPN_INF_SKIP    - path doesn't exist, not allowed to create
+ *  MPN_ERR_SKIP    - path doesn't exist, tried to create and failed; or path
+ *                    exists and is not a directory, but is supposed to be
+ *  MPN_ERR_TOOLONG - path is too long
+ *  MPN_NOMEM       - can't allocate memory for filename buffers
+ */
+{
+    static int rootlen = 0;   /* length of rootpath */
+    static char *rootpath;    /* user's "extract-to" directory */
+    static char *buildpath;   /* full path (so far) to extracted file */
+    static char *end;         /* pointer to end of buildpath ('\0') */
+
+#   define FN_MASK   7
+#   define FUNCTION  (flag & FN_MASK)
+
+
+/*---------------------------------------------------------------------------
+    APPEND_DIR:  append the path component to the path being built and check
+    for its existence.  If doesn't exist and we are creating directories, do
+    so for this one; else signal success or error as appropriate.
+  ---------------------------------------------------------------------------*/
+
+    if (FUNCTION == APPEND_DIR) {
+        int too_long = FALSE;
+#ifdef SHORT_NAMES
+        char *old_end = end;
+#endif
+
+        Trace((stderr, "appending dir segment [%s]\n", FnFilter1(pathcomp)));
+        while ((*end = *pathcomp++) != '\0')
+            ++end;
+#ifdef SHORT_NAMES   /* path components restricted to 14 chars, typically */
+        if ((end-old_end) > NAME_MAX)
+            *(end = old_end + NAME_MAX) = '\0';
+#endif
+
+        /* GRR:  could do better check, see if overrunning buffer as we go:
+         * check end-buildpath after each append, set warning variable if
+         * within 20 of FILNAMSIZ; then if var set, do careful check when
+         * appending.  Clear variable when begin new path. */
+
+        if ((end-buildpath) > NAME_MAX-3)   /* need ':', one-char name, '\0' */
+            too_long = TRUE;                /* check if extracting directory? */
+        if (stat(buildpath, &G.statbuf)) {  /* path doesn't exist */
+            if (!G.create_dirs) { /* told not to create (freshening) */
+                free(buildpath);
+                return MPN_INF_SKIP;    /* path doesn't exist: nothing to do */
+            }
+            if (too_long) {
+                Info(slide, 1, ((char *)slide, LoadFarString(PathTooLong),
+                  FnFilter1(buildpath)));
+                free(buildpath);
+                /* no room for filenames:  fatal */
+                return MPN_ERR_TOOLONG;
+            }
+            if (macmkdir(buildpath) == -1) {   /* create the directory */
+                Info(slide, 1, ((char *)slide, LoadFarString(CantCreateDir),
+                  FnFilter2(buildpath), FnFilter1(G.filename)));
+                free(buildpath);
+                /* path didn't exist, tried to create, failed */
+                return MPN_ERR_SKIP;
+            }
+            created_dir = TRUE;
+        } else if (!S_ISDIR(G.statbuf.st_mode)) {
+            Info(slide, 1, ((char *)slide, LoadFarString(DirIsntDirectory),
+              FnFilter2(buildpath), FnFilter1(G.filename)));
+            free(buildpath);
+            /* path existed but wasn't dir */
+            return MPN_ERR_SKIP;
+        }
+        if (too_long) {
+            Info(slide, 1, ((char *)slide, LoadFarString(PathTooLong),
+              FnFilter1(buildpath)));
+            free(buildpath);
+            /* no room for filenames:  fatal */
+            return MPN_ERR_TOOLONG;
+        }
+        *end++ = ':';
+        *end = '\0';
+        Trace((stderr, "buildpath now = [%s]\n", FnFilter1(buildpath)));
+        return MPN_OK;
+
+    } /* end if (FUNCTION == APPEND_DIR) */
+
+/*---------------------------------------------------------------------------
+    GETPATH:  copy full path to the string pointed at by pathcomp, and free
+    buildpath.
+  ---------------------------------------------------------------------------*/
+
+    if (FUNCTION == GETPATH) {
+        strcpy(pathcomp, buildpath);
+        Trace((stderr, "getting and freeing path [%s]\n",
+          FnFilter1(pathcomp)));
+        free(buildpath);
+        buildpath = end = (char *)NULL;
+        return MPN_OK;
+    }
+
+/*---------------------------------------------------------------------------
+    APPEND_NAME:  assume the path component is the filename; append it and
+    return without checking for existence.
+  ---------------------------------------------------------------------------*/
+
+    if (FUNCTION == APPEND_NAME) {
+#ifdef SHORT_NAMES
+        char *old_end = end;
+#endif
+
+        Trace((stderr, "appending filename [%s]\n", FnFilter1(pathcomp)));
+        while ((*end = *pathcomp++) != '\0') {
+            ++end;
+#ifdef SHORT_NAMES  /* truncate name at 14 characters, typically */
+            if ((end-old_end) > NAME_MAX)
+                *(end = old_end + NAME_MAX) = '\0';
+#endif
+            if ((end-buildpath) >= NAME_MAX) {
+                *--end = '\0';
+                Info(slide, 0x201, ((char *)slide,
+                  LoadFarString(PathTooLongTrunc),
+                  FnFilter1(G.filename), FnFilter2(buildpath)));
+                return MPN_INF_TRUNC;   /* filename truncated */
             }
         }
-    } while (theEvent.what != keyDown);
+        Trace((stderr, "buildpath now = [%s]\n", FnFilter1(buildpath)));
+        /* could check for existence here, prompt for new name... */
+        return MPN_OK;
+    }
 
-    printf("*");
-    fflush(stdout);
+/*---------------------------------------------------------------------------
+    INIT:  allocate and initialize buffer space for the file currently being
+    extracted.  If file was renamed with an absolute path, don't prepend the
+    extract-to path.
+  ---------------------------------------------------------------------------*/
 
-    return (int)c;
-}
+    if (FUNCTION == INIT) {
+        Trace((stderr, "initializing buildpath to "));
+        if ((buildpath = (char *)malloc(strlen(G.filename)+rootlen+2))
+            == (char *)NULL)
+            return MPN_NOMEM;
+        if ((rootlen > 0) && !renamed_fullpath) {
+            strcpy(buildpath, rootpath);
+            end = buildpath + rootlen;
+        } else {
+            end = buildpath;
+            if (!renamed_fullpath && !uO.jflag) {
+                *end++ = ':';           /* indicate relative path */
+            }
+            *end = '\0';
+        }
+        Trace((stderr, "[%s]\n", FnFilter1(buildpath)));
+        return MPN_OK;
+    }
 
+/*---------------------------------------------------------------------------
+    ROOT:  if appropriate, store the path in rootpath and create it if
+    necessary; else assume it's a zipfile member and return.  This path
+    segment gets used in extracting all members from every zipfile specified
+    on the command line.
+  ---------------------------------------------------------------------------*/
+
+#if (!defined(SFX) || defined(SFX_EXDIR))
+    if (FUNCTION == ROOT) {
+        Trace((stderr, "initializing root path to [%s]\n",
+          FnFilter1pathcomp)));
+        if (pathcomp == (char *)NULL) {
+            rootlen = 0;
+            return MPN_OK;
+        }
+        if (rootlen > 0)        /* rootpath was already set, nothing to do */
+            return MPN_OK;
+        if ((rootlen = strlen(pathcomp)) > 0) {
+            char *tmproot;
+
+            if ((tmproot = (char *)malloc(rootlen+2)) == (char *)NULL) {
+                rootlen = 0;
+                return MPN_NOMEM;
+            }
+            strcpy(tmproot, pathcomp);
+            if (tmproot[rootlen-1] == ':') {
+                tmproot[--rootlen] = '\0';     /* strip trailing delimiter */
+            }
+            if (rootlen > 0 && (stat(tmproot, &G.statbuf) ||
+                !S_ISDIR(G.statbuf.st_mode)))
+            {   /* path does not exist */
+                if (!G.create_dirs /* || iswild(tmproot) */ ) {
+                    free(tmproot);
+                    rootlen = 0;
+                    /* skip (or treat as stored file) */
+                    return MPN_INF_SKIP;
+                }
+                /* create the directory (could add loop here scanning tmproot
+                 * to create more than one level, but why really necessary?) */
+                if (macmkdir(tmproot) == -1) {
+                    Info(slide, 1, ((char *)slide,
+                      LoadFarString(CantCreateExtractDir),
+                      FnFilter1(tmproot)));
+                    free(tmproot);
+                    rootlen = 0;
+                    /* path didn't exist, tried to create, and failed: */
+                    /* file exists, or 2+ subdir levels required */
+                    return MPN_ERR_SKIP;
+                }
+            }
+            tmproot[rootlen++] = ':';
+            tmproot[rootlen] = '\0';
+            if ((rootpath = (char *)realloc(tmproot, rootlen+1)) == NULL) {
+                free(tmproot);
+                rootlen = 0;
+                return MPN_NOMEM;
+            }
+            Trace((stderr, "rootpath now = [%s]\n", FnFilter1(rootpath)));
+        }
+        return MPN_OK;
+    }
+#endif /* !SFX || SFX_EXDIR */
+
+/*---------------------------------------------------------------------------
+    END:  free rootpath, immediately prior to program exit.
+  ---------------------------------------------------------------------------*/
+
+    if (FUNCTION == END) {
+        Trace((stderr, "freeing rootpath\n"));
+        if (rootlen > 0) {
+            free(rootpath);
+            rootlen = 0;
+        }
+        return MPN_OK;
+    }
+
+    return MPN_INVALID; /* should never reach */
+
+} /* end function checkdir() */
+
+
+
+
+
+/****************************/
+/* Function close_outfile() */
+/****************************/
+
+void close_outfile(__G)
+    __GDEF
+{
+    OSErr err;
+
+    if (fileno(G.outfile) == 1)
+        return;         /* don't attempt to close or set time on stdout */
+
+    err = (OSErr)fclose(G.outfile);
+
+    /* finally set FinderInfo */
+    if  (MacZipMode >= JohnnyLee_EF)
+        {
+        err = SetFinderInfo(&CurrentFile, &newExtraField);
+        printerr("close_outfile SetFinderInfo ", err, err,
+                 __LINE__, __FILE__, G.filename);
+        }
+    else  /* unknown extra field, set at least file time/dates */
+        {
+        err = SetFileTime();
+        }
+
+#ifndef SwitchZIPITefSupportOff
+    if ((MacZipMode == TomBrownZipIt1_EF) ||
+        (MacZipMode == TomBrownZipIt2_EF))
+        {
+        if(FSpIsMacBinary(&CurrentFile))
+            {
+            Info(slide, 0, ((char *)slide, LoadFarString(MacBinaryMsg)));
+                err = DecodeMacBinaryFile(&CurrentFile);
+                printerr("close_outfile DecodeMacBinaryFile ", err, err,
+                  __LINE__, __FILE__, G.filename);
+            }
+        }
 #endif
 
+        /* set read-only perms if needed */
+    if ((err == noErr) && G.pInfo->read_only)
+        {
+        err = FSpSetFLock(&CurrentFile);
+        printerr("FSpSetFLock",err,err,__LINE__,__FILE__,G.filename);
+        }
+
+    if (malloced_attrbuff != NULL)
+        {
+        attrbuff = malloced_attrbuff;
+        }
+
+} /* end function close_outfile() */
 
 
 
-/******************************/
-/*  Function version_local()  */
-/******************************/
 
-/*
-** Print Compilers version and compile time/date
-**
-*/
+/****************************/
+/* Function SetFileTime() */
+/****************************/
 
-void version_local()
+static OSErr SetFileTime(void)
 {
-/* prints e.g:
-Compiled with  Metrowerks CodeWarrior version 2000 for  PowerPC Processor
- compile time:  Feb  4 1998 17:49:49.
-*/
+#ifdef USE_EF_UT_TIME
+    iztimes z_utime;
+    unsigned eb_izux_flg;
+#endif
+    OSErr err;
+    CInfoPBRec      fpb;
 
-static ZCONST char CompiledWith[] =
-                        "\n\nCompiled with %s %x for %s \n %s %s %s.\n\n";
+    fpb.hFileInfo.ioNamePtr    = CurrentFile.name;
+    fpb.hFileInfo.ioVRefNum    = CurrentFile.vRefNum;
+    fpb.hFileInfo.ioDirID      = CurrentFile.parID;
+    fpb.hFileInfo.ioFDirIndex  = 0;
 
-    printf(CompiledWith,
+    err = PBGetCatInfoSync((CInfoPBPtr)&fpb);
+    printerr("PBGetCatInfoSync", err, err, __LINE__, __FILE__, G.filename);
 
+    if ((MacZipMode == UnKnown_EF) || UseUT_ExtraField ) {
+
+#ifdef USE_EF_UT_TIME
+        eb_izux_flg = ef_scan_for_izux(G.extra_field, G.lrec.extra_field_length, 0,
+                                       G.lrec.last_mod_dos_datetime, &z_utime, NULL);
+
+        if (G.extra_field && (eb_izux_flg & EB_UT_FL_MTIME))
+            {
+            fpb.hFileInfo.ioFlMdDat = UnixFtime2MacFtime(z_utime.mtime);
+            fpb.hFileInfo.ioFlCrDat = UnixFtime2MacFtime(z_utime.ctime);
+            }
+
+#ifdef DEBUG_TIME
+            {
+            struct tm *tp = gmtime(&z_utime.ctime);
+            printf(
+              "SetFileTime:  Unix e.f. creat. time = %d/%2d/%2d  %2d:%2d:%2d -> %lu UTC\n",
+              tp->tm_year, tp->tm_mon+1, tp->tm_mday,
+              tp->tm_hour, tp->tm_min, tp->tm_sec, z_utime.ctime);
+            tp = gmtime(&z_utime.mtime);
+            printf(
+              "SetFileTime:  Unix e.f. modif. time = %d/%2d/%2d  %2d:%2d:%2d -> %lu UTC\n",
+              tp->tm_year, tp->tm_mon+1, tp->tm_mday,
+              tp->tm_hour, tp->tm_min, tp->tm_sec, z_utime.mtime);
+            }
+#endif /* DEBUG_TIME */
+
+
+        else /* no Unix time field found - use dostime  */
+#endif /* !USE_EF_UT_TIME */
+            {
+            TTrace((stderr, "SetFileTime:  using DOS-Datetime ! \n",
+                    z_utime.mtime));
+            fpb.hFileInfo.ioFlMdDat = dos_to_unix_time(G.lrec.last_mod_dos_datetime);
+            UNIX_TO_MACOS(fpb.hFileInfo.ioFlMdDat);
+            fpb.hFileInfo.ioFlCrDat = fpb.hFileInfo.ioFlMdDat;
+            }
+
+     /* Restore ioDirID field in pb which was changed by PBGetCatInfoSync */
+        fpb.hFileInfo.ioDirID = CurrentFile.parID;
+
+        if (err == noErr)
+            {
+            err = PBSetCatInfoSync((CInfoPBPtr)&fpb);
+            printerr("PBSetCatInfoSync",err,err,__LINE__,__FILE__,G.filename);
+            }
+        if (err != noErr)
+            Info(slide, 0x201, ((char *)slide, LoadFarString(ErrNoTimeSet),
+              FnFilter1(G.filename)));
+    }
+
+return err;
+} /* end function SetFileTime() */
+
+
+
+
+#ifndef SFX
+
+/************************/
+/*  Function version()  */
+/************************/
+
+void version(__G)
+    __GDEF
+{
+/*
+ZCONST char Far CompiledWith[] =
+               "Compiled with %s%s for %s%s%s%s.\n\n"; */
+
+char DateTime[50];
 
 #ifdef __MWERKS__
-      " Metrowerks CodeWarrior version", __MWERKS__,
+char CompVer[10];
+sprintf(CompVer, "%x", __MWERKS__);
 #endif
 
+    sprintf(DateTime,"%s  %s",__DATE__, __TIME__);
+
+    sprintf((char *)slide, LoadFarString(CompiledWith),
+
+#ifdef __MWERKS__
+
+      " Metrowerks CodeWarrior version ",CompVer,
+#else
+      " ", " ",
+#endif
 
 #ifdef __MC68K__
       " MC68K Processor",
@@ -239,103 +948,278 @@ static ZCONST char CompiledWith[] =
 #endif
 
 #ifdef __DATE__
-      "compile time: ", __DATE__, __TIME__
+
+      "\n compile time: ", DateTime, ""
 #else
       "", "", ""
 #endif
     );
-} /* end function version_local() */
+
+    (*G.message)((zvoid *)&G, slide, (ulg)strlen((char *)slide), 0);
+
+} /* end function version() */
+
+#endif /* !SFX */
 
 
 
 
 
-/*
-** Deletes a dir if the switch '-m' is used
-**
-*/
+/***********************/
+/* Function macmkdir() */
+/***********************/
 
-int deletedir(char *path)
+int macmkdir(char *path)
 {
-static char     Num = 0;
-static FSSpec   trashfolder;
-static Boolean  FirstCall = true;
-static Boolean  Immediate_File_Deletion = false;
-OSErr           err;
-FSSpec          dirToDelete;
-char            currpath[NAME_MAX], *envptr;
-CInfoPBRec      fpb;
+    OSErr err = -1;
+    OSErr err_rc;
+    char CompletePath[NAME_MAX], CompletePath2[NAME_MAX];
+    Boolean isDirectory = false;
+    short CurrentFork;
+    unsigned pathlen;
+    long dirID;
 
-/* init this function */
-if ((path == NULL) ||
-    (strlen(path) == 0))
-    {
-    Num = 0;
-    FirstCall = true;
-    return -1;
+    AssertStr(path, path)
+
+    GetExtraFieldData(&MacZipMode, &newExtraField);
+
+    if (MacZipMode >= JohnnyLee_EF) {
+        RfDfFilen2Real(CompletePath, G.filename, MacZipMode,
+                       (newExtraField.flags & EB_M3_FL_NOCHANGE), &CurrentFork);
+        if (CurrentFork == ResourceFork)
+            /* don't build a 'XtraStuf.mac:' dir  */
+            return 0;
     }
 
-UserStop();
-
-GetCompletePath(currpath,path,&dirToDelete, &err);
-
-if (FirstCall == true)
-    {
-    FirstCall = false;
-    envptr = getenv("Immediate_File_Deletion");
-    if (!(envptr == (char *)NULL || *envptr == '\0'))
+    if (!IgnoreEF_Macfilename)
         {
-        if (stricmp(envptr,"yes") == 0)
-            Immediate_File_Deletion = true;
-        else
-            Immediate_File_Deletion = false;
+        pathlen = strlen(path);
+        strcpy(CompletePath, uO.exdir);
+        strcat(CompletePath, newExtraField.FullPath);
+        CompletePath[pathlen] = 0x00;
         }
-    err = FSpFindFolder(dirToDelete.vRefNum, kTrashFolderType,
-                      kDontCreateFolder,&trashfolder);
-    printerr("FSpFindFolder:",err,err,__LINE__,__FILE__,path);
+    else
+        {
+        strcpy(CompletePath, path);
+        }
+
+    GetCompletePath(CompletePath2, CompletePath, &CurrentFile, &err);
+    printerr("GetCompletePath", (err != -43) && (err != -120) && (err != 0),
+              err, __LINE__, __FILE__, CompletePath2);
+
+
+    err = FSpGetDirectoryID(&CurrentFile, &dirID, &isDirectory);
+    printerr("macmkdir FSpGetDirectoryID ", (err != -43) && (err != 0),
+             err, __LINE__, __FILE__, CompletePath2);
+
+    if (err != -43)     /* -43 = file/directory not found  */
+        return 0;
+    else {
+        HParamBlockRec    hpbr;
+
+        hpbr.fileParam.ioCompletion = NULL;
+        hpbr.fileParam.ioNamePtr    = CurrentFile.name;
+        hpbr.fileParam.ioVRefNum    = CurrentFile.vRefNum;
+        hpbr.fileParam.ioDirID      = CurrentFile.parID;
+        err = PBDirCreateSync(&hpbr);
+        printerr("macmkdir PBDirCreateSync ", err,
+                 err, __LINE__, __FILE__, CompletePath2);
+
+        /* finally set FinderInfo */
+        if  (MacZipMode >= JohnnyLee_EF)
+            {
+            err_rc = SetFinderInfo(&CurrentFile, &newExtraField);
+            printerr("macmkdir SetFinderInfo ", err_rc, err_rc,
+                      __LINE__, __FILE__, CompletePath2);
+            }
     }
 
-    fpb.dirInfo.ioNamePtr   = dirToDelete.name;
-    fpb.dirInfo.ioVRefNum   = dirToDelete.vRefNum;
-    fpb.dirInfo.ioDrDirID   = dirToDelete.parID;
-    fpb.dirInfo.ioFDirIndex = 0;
+    return (int)err;
+} /* macmkdir */
 
-    err = PBGetCatInfoSync(&fpb);
-    printerr("PBGetCatInfo deletedir ", err, err,
-             __LINE__, __FILE__, "");
 
-if (fpb.dirInfo.ioDrNmFls > 0)
-    {
-    return 0;  /* do not move / delete folders which are not empty */
-    }
 
-if (Immediate_File_Deletion)
-    {
-    err = FSpDelete(&dirToDelete);
-    return err;
-    }
 
-err = CatMove (dirToDelete.vRefNum, dirToDelete.parID,
-               dirToDelete.name, trashfolder.parID, trashfolder.name);
+/**********************/
+/* Function macopen() */
+/**********************/
 
-/* -48 = file is already existing so we have to rename it before
-   moving the file */
-if (err == -48)
-    {
-    Num++;
-    if (dirToDelete.name[0] >= 28) /* cut foldername if to long */
-        dirToDelete.name[0] = 28;
-    P2CStr(dirToDelete.name);
-    sprintf(currpath,"%s~%d",(char *)dirToDelete.name,Num);
-    C2PStr(currpath);
-    C2PStr((char *)dirToDelete.name);
-    err = HRename (dirToDelete.vRefNum, dirToDelete.parID,
-                   dirToDelete.name, (unsigned char *) currpath);
+short macopen(char *sz, short nFlags)
+{
+    OSErr   err;
+    char    chPerms = (!nFlags) ? fsRdPerm : fsRdWrPerm;
+    short   nFRefNum;
 
-    err = CatMove (dirToDelete.vRefNum, dirToDelete.parID,
-                   (unsigned char *) currpath, trashfolder.parID,
-                   trashfolder.name);
-    }
+    AssertStr(sz, sz)
+
+    /* we only need the filespec of the zipfile;
+       filespec of the other files (to be extracted) will be
+       determined by open_outfile() */
+    if (OpenZipFile)
+        {
+        char CompletePath[NAME_MAX];
+        FSSpec zipfile;
+        GetCompletePath(CompletePath, sz, &zipfile, &err);
+        printerr("GetCompletePath", (err != -43) && (err != 0),
+                  err, __LINE__, __FILE__, sz);
+        if (CheckMountedVolumes(CompletePath) > 1)
+            DoWarnUserDupVol(CompletePath);
+        err = HOpen(zipfile.vRefNum, zipfile.parID, zipfile.name,
+                    chPerms, &nFRefNum);
+        printerr("Zipfile HOpen", err, err, __LINE__, __FILE__, sz);
+        OpenZipFile = false;
+        }
+    else   /* open zipfile entries  */
+        {
+        if (nFlags > 1)
+            {
+            err = HOpenRF(CurrentFile.vRefNum, CurrentFile.parID, CurrentFile.name,
+                      chPerms, &nFRefNum);
+            printerr("HOpenRF", (err != -43) && (err != 0) && (err != -54),
+                 err, __LINE__, __FILE__, sz);
+            }
+        else
+            {
+            err = HOpen(CurrentFile.vRefNum, CurrentFile.parID, CurrentFile.name,
+                    chPerms, &nFRefNum);
+            printerr("HOpen", (err != -43) && (err != 0),
+                 err, __LINE__, __FILE__, sz);
+            }
+        }
+
+    if ( err || (nFRefNum == 1) )
+        {
+        printerr("macopen", err, err, __LINE__, __FILE__,
+                 (char *) CurrentFile.name);
+        return -1;
+        }
+    else
+        {
+        if ( nFlags )
+            SetEOF( nFRefNum, 0 );
+        return nFRefNum;
+        }
+}
+
+
+
+
+
+/***********************/
+/* Function maccreat() */
+/***********************/
+
+short maccreat(char *sz)
+{
+    OSErr   err;
+    char scriptTag = newExtraField.fpb.hFileInfo.ioFlXFndrInfo.fdScript;
+    static char Num = 0;
+
+    sz = sz;
+
+    /* Set fdScript in FXInfo
+     * The negative script constants (smSystemScript, smCurrentScript,
+     * and smAllScripts) don't make sense on disk.  So only use scriptTag
+     * if scriptTag >= smRoman (smRoman is 0).
+     * fdScript is valid if high bit is set (see IM-6, page 9-38)
+     */
+    scriptTag = (scriptTag >= smRoman) ?
+                ((char)scriptTag | (char)0x80) : (smRoman);
+    newExtraField.fpb.hFileInfo.ioFlXFndrInfo.fdScript = scriptTag;
+
+    err = FSpCreate(&CurrentFile,
+                    newExtraField.fpb.hFileInfo.ioFlFndrInfo.fdCreator,
+                    newExtraField.fpb.hFileInfo.ioFlFndrInfo.fdType,
+                    newExtraField.fpb.hFileInfo.ioFlXFndrInfo.fdScript);
+
+    /* -37 = bad filename; make the filename shorter and try again  */
+    /* filename must not be longer than 32 chars */
+    if (err == -37)
+        {
+        strcpy((char *)CurrentFile.name,
+                MakeFilenameShorter(P2CStr(CurrentFile.name)));
+        Info(slide, 0x401, ((char *)slide, LoadFarString(FilenameToLong),
+          FnFilter1((char *)CurrentFile.name)));
+        C2PStr((char *)CurrentFile.name);
+        err = FSpCreate(&CurrentFile,
+                    newExtraField.fpb.hFileInfo.ioFlFndrInfo.fdCreator,
+                    newExtraField.fpb.hFileInfo.ioFlFndrInfo.fdType,
+                    newExtraField.fpb.hFileInfo.ioFlXFndrInfo.fdScript);
+        }
+
+    err = printerr("FSpCreate maccreat ", (err != -48) && (err != 0),
+                   err, __LINE__, __FILE__, G.filename);
+
+    if (err == noErr)
+        return noErr;
+    else
+        return -1;
+}
+
+
+
+
+
+/**********************/
+/* Function macread() */
+/**********************/
+
+short macread(short nFRefNum, char *pb, unsigned cb)
+{
+    long    lcb = cb;
+
+    (void)FSRead( nFRefNum, &lcb, pb );
+    return (short)lcb;
+}
+
+
+
+
+/***********************/
+/* Function macwrite() */
+/***********************/
+
+long macwrite(short nFRefNum, char *pb, unsigned cb)
+{
+    long    lcb = cb;
+    OSErr   err;
+    FILE    *stream;
+
+    if ( (nFRefNum == 1) || (nFRefNum == 2) )
+        {
+        stream = (nFRefNum == 1 ? stdout : stderr);
+        pb[cb] = '\0';           /* terminate C-string */
+                                 /* assumes writable buffer (e.g., slide[]) */
+                                 /* with room for one more char at end of buf */
+        lcb = fprintf(stream, pb);
+        }
+    else
+        err = FSWrite( nFRefNum, &lcb, pb );
+
+    if (err != 0)
+        {
+        errno = ERANGE;
+        return -1;
+        }
+
+    return (long)lcb;
+}
+
+
+
+
+
+/***********************/
+/* Function macclose() */
+/***********************/
+
+short macclose(short nFRefNum)
+{
+OSErr err;
+
+err = FSClose( nFRefNum );
+printerr("macclose FSClose ",err,err, __LINE__,__FILE__,G.filename);
+
 
 return err;
 }
@@ -343,737 +1227,745 @@ return err;
 
 
 
-/*
-** Set the file-type so the archive will get the correct icon, type
-** and creator code.
-*/
 
-void setfiletype(char *new_f, unsigned long Creator, unsigned long Type)
+/***********************/
+/* Function maclseek() */
+/***********************/
+
+long maclseek(short nFRefNum, long lib, short nMode)
 {
-OSErr   err;
+    ParamBlockRec   pbr;
 
-if (strcmp(zipfile, new_f) == 0)
-    err = FSpChangeCreatorType(&MacZip.ZipFileSpec, Creator, Type);
-printerr("FSpChangeCreatorType:", err, err, __LINE__, __FILE__, new_f);
+    if (nMode == SEEK_SET)
+        nMode = fsFromStart;
+    else if (nMode == SEEK_CUR)
+        nMode = fsFromMark;
+    else if (nMode == SEEK_END)
+        nMode = fsFromLEOF;
+    pbr.ioParam.ioRefNum = nFRefNum;
+    pbr.ioParam.ioPosMode = nMode;
+    pbr.ioParam.ioPosOffset = lib;
+    (void)PBSetFPosSync(&pbr);
+    return pbr.ioParam.ioPosOffset;
+}
 
-return;
+
+
+static void BuildMacFilename(void)
+{
+char CompletePath[NAME_MAX];
+char ArchiveDir[NAME_MAX];
+unsigned exdirlen = strlen(uO.exdir);
+short CurrentFork;
+OSErr err;
+
+GetExtraFieldData(&MacZipMode, &newExtraField);
+
+if (MacZipMode >= JohnnyLee_EF)
+    {
+    if (IgnoreEF_Macfilename)
+        {
+        strcpy(ArchiveDir, &G.filename[exdirlen+1]);
+        G.filename[exdirlen+1] = '\0';
+        RfDfFilen2Real(ArchiveDir, ArchiveDir, MacZipMode,
+                      (newExtraField.flags & EB_M3_FL_DATFRK), &CurrentFork);
+        strcat(G.filename, ArchiveDir);
+        }
+    else
+        {        /* use the filename of mac extra-field */
+        G.filename[exdirlen] = '\0';  /* cut resource-path */
+        strcat(G.filename,newExtraField.FullPath);
+        }
+    }
+
+GetCompletePath(CompletePath, G.filename, &CurrentFile, &err);
+printerr("GetCompletePath BuildMacFilename ", (err != -43) && (err != 0),
+             err, __LINE__, __FILE__, CompletePath);
+
+err = GetVolFileSystemID(C2PStr(CompletePath), CurrentFile.vRefNum,
+                         &fileSystemID);
+printerr("GetVolFileSystemID BuildMacFilename ", err, err, __LINE__, __FILE__,
+          CompletePath);
+
+if (MacZipMode == TomBrownZipIt1_EF)
+    {
+    memcpy(CurrentFile.name, newExtraField.filename, newExtraField.filename[0]+1);
+    CurrentFile.name[0] = CurrentFile.name[0] - 1;
+    }
+
 }
 
 
 
 
+/* The following functions are dealing with the extra-field handling, only. */
+
+/****************************/
+/* Function SetFinderInfo() */
+/****************************/
+
+static OSErr SetFinderInfo(FSSpec *spec, MACINFO *mi)
+{
+    OSErr err;
+    CInfoPBRec      fpb;
+
+    fpb.hFileInfo.ioNamePtr   = (StringPtr) &(spec->name);
+    fpb.hFileInfo.ioVRefNum   = spec->vRefNum;
+    fpb.hFileInfo.ioDirID     = spec->parID;
+    fpb.hFileInfo.ioFDirIndex = 0;
+
+    err = PBGetCatInfoSync(&fpb);
+    printerr("PBGetCatInfo SetFinderInfo ", err, err,
+             __LINE__, __FILE__, G.filename);
+
+    if  ((MacZipMode == JohnnyLee_EF) || (MacZipMode == NewZipMode_EF))
+    {
+        if (!UseUT_ExtraField)  {
+            fpb.hFileInfo.ioFlCrDat = mi->fpb.hFileInfo.ioFlCrDat;
+            fpb.hFileInfo.ioFlMdDat = mi->fpb.hFileInfo.ioFlMdDat;
+        }
+
+        fpb.hFileInfo.ioFlFndrInfo   = mi->fpb.hFileInfo.ioFlFndrInfo;
+    }
+
+    if (MacZipMode == NewZipMode_EF)
+    {
+        if (uO.E_flag) PrintMacExtraInfo(mi);
+        fpb.hFileInfo.ioFlXFndrInfo  = mi->fpb.hFileInfo.ioFlXFndrInfo;
+
+        fpb.hFileInfo.ioFVersNum  = mi->fpb.hFileInfo.ioFVersNum;
+        fpb.hFileInfo.ioACUser    = mi->fpb.hFileInfo.ioACUser;
+
+        if (!UseUT_ExtraField) {
+            fpb.hFileInfo.ioFlBkDat = mi->fpb.hFileInfo.ioFlBkDat;
+#ifdef USE_EF_UT_TIME
+            if (!(mi->flags & EB_M3_FL_NOUTC))
+                {
+#ifdef DEBUG_TIME
+            {
+            printf("\nSetFinderInfo:  Mac modif: %lu local -> UTOffset: "\
+                   "%d before AdjustForTZmoveMac\n",
+              fpb.hFileInfo.ioFlCrDat, mi->Cr_UTCoffs);
+            }
+#endif /* DEBUG_TIME */
+                fpb.hFileInfo.ioFlCrDat =
+                  AdjustForTZmoveMac(fpb.hFileInfo.ioFlCrDat, mi->Cr_UTCoffs);
+                fpb.hFileInfo.ioFlMdDat =
+                  AdjustForTZmoveMac(fpb.hFileInfo.ioFlMdDat, mi->Md_UTCoffs);
+                fpb.hFileInfo.ioFlBkDat =
+                  AdjustForTZmoveMac(fpb.hFileInfo.ioFlBkDat, mi->Bk_UTCoffs);
+#ifdef DEBUG_TIME
+            {
+            printf("SetFinderInfo:  Mac modif: %lu local -> UTOffset: "\
+                   "%d after AdjustForTZmoveMac\n",
+              fpb.hFileInfo.ioFlCrDat, mi->Cr_UTCoffs);
+            }
+#endif /* DEBUG_TIME */
+
+                }
+#endif /* USE_EF_UT_TIME */
+        }
+
+        if ((mi->FinderComment) &&
+           (fileSystemID == HFS_fileSystem)) {
+            C2PStr(mi->FinderComment);
+            err = FSpDTSetComment(spec, (unsigned char *) mi->FinderComment);
+            printerr("FSpDTSetComment:",err , err,
+                     __LINE__, __FILE__, mi->FullPath);
+        }
+    }
+
+    /* Restore ioDirID field in pb which was changed by PBGetCatInfo */
+    fpb.hFileInfo.ioDirID = spec->parID;
+    err = PBSetCatInfoSync(&fpb);
+
+    return err;
+} /* SetFinderInfo() */
+
+
+
 
 /*
-** Convert the external (native) filename into Zip's internal Unix compatible
-** name space.
+** Scan the extra fields in extra_field, and look for a MacOS EF; return a
+** pointer to that EF, or NULL if it's not there.
 */
-
-char *ex2in(char *externalFilen, int isdir, int *pdosflag)
-/* char *externalFilen     external file name */
-/* int isdir               input: externalFilen is a directory */
-/* int *pdosflag           output: force MSDOS file attributes? */
-/* Convert the external file name to a zip file name, returning the malloc'ed
-   string or NULL if not enough memory. */
+static uch *scanMacOSexfield(uch *ef_ptr, unsigned ef_len,
+                             short *MacZipMode)
 {
-  char *internalFilen;              /* internal file name (malloc'ed) */
-  char *t;                          /* shortened name */
-  char *Pathname;
-  char buffer[NAME_MAX];
-  int dosflag;
+    while (ef_ptr != NULL && ef_len >= EB_HEADSIZE) {
+        unsigned eb_id  = makeword(EB_ID  + ef_ptr);
+        unsigned eb_len = makeword(EB_LEN + ef_ptr);
 
-  AssertStr(externalFilen, externalFilen)
-  AssertBool(isdir,"")
-
-  dosflag = dosify;  /* default for non-DOS and non-OS/2 */
-
-  /* Find starting point in name before doing malloc */
-  for (t = externalFilen; *t == PATH_END; t++)
-      ;
-
-  if (!MacZip.StoreFullPath)
-        {
-        Pathname = StripPartialDir(buffer, MacZip.SearchDir,t);
-        }
-  else
-        {
-        Pathname = t;
+        if (eb_len > (ef_len - EB_HEADSIZE)) {
+            Trace((stderr,
+              "scanMacOSexfield: block length %u > rest ef_size %u\n", eb_len,
+              ef_len - EB_HEADSIZE));
+            break;
         }
 
-  /* Make changes, if any, to the copied name (leave original intact) */
-  if (!pathput)
-    {
-    t = last(Pathname, PATH_END);
+        if (isMacOSexfield(eb_id, eb_len, MacZipMode)) {
+            return ef_ptr;
+        }
+
+        ef_ptr += (eb_len + EB_HEADSIZE);
+        ef_len -= (eb_len + EB_HEADSIZE);
     }
-  else t = Pathname;
 
-  /* Malloc space for internal name and copy it */
-  if ((internalFilen = malloc(strlen(t) + 10 + strlen(ResourceMark) )) == NULL)
     return NULL;
-
-  sstrcpy(internalFilen, t);
-
-    /* we have to eliminate illegal chars:
-     * The name space for Mac filenames and Zip filenames (unix style names)
-     * do both include all printable extended-ASCII characters.  The only
-     * difference we have to take care of is the single special character
-     * used as path delimiter:
-     * ':' on MacOS and '/' on Unix and '\' on Dos.
-     * So, to convert between Mac filenames and Unix filenames without any
-     * loss of information, we simply interchange ':' and '/'.  Additionally,
-     * we try to convert the coding of the extended-ASCII characters into
-     * InfoZip's standard ISO 8859-1 codepage table.
-     */
-  MakeCompatibleString(internalFilen, ':', '/', '/', ':',
-                       MacZip.CurrTextEncodingBase);
-
-  /* Returned malloc'ed name */
-  if (pdosflag)
-    *pdosflag = dosflag;
-
-  if (isdir)
-    {
-    return internalFilen;      /* avoid warning on unused variable */
-    }
-
-  if (dosify)
-    {
-    msname(internalFilen);
-    printf("\n ex2in: %s",internalFilen);
-    }
-
-  return internalFilen;
 }
 
 
 
+
+static Boolean isMacOSexfield(unsigned id, unsigned size, short *MacZipMode)
+{
+size = size;
+
+    switch (id)
+        {
+        case EF_ZIPIT:
+            {           /* we do not (yet) support ZipIt's format completely */
+            *MacZipMode = TomBrownZipIt1_EF;
+            IgnoreEF_Macfilename = true;
+            return true;
+            }
+
+        case EF_ZIPIT2:
+            {           /* we do not (yet) support ZipIt's format completely */
+            *MacZipMode = TomBrownZipIt2_EF;
+            IgnoreEF_Macfilename = true;
+            return true;
+            }
+
+        case EF_MAC3:
+            {           /* the new maczip format */
+            *MacZipMode = NewZipMode_EF;
+            IgnoreEF_Macfilename = false;
+            return true;
+            }
+
+        case EF_JLMAC:
+            {           /* Johnny Lee's old maczip format */
+            *MacZipMode = JohnnyLee_EF;
+            IgnoreEF_Macfilename = true;
+            return true;
+            }
+
+        default:
+            {           /* any other format */
+            *MacZipMode = UnKnown_EF;
+            IgnoreEF_Macfilename = true;
+            return false;
+            }
+        }
+
+    return false;
+}
+
+
+
+
 /*
-** Collect all filenames. Go through all directories
+** Return a unsigned long from a four-byte sequence
+** in big endian format
+*/
+
+ulg makePPClong(ZCONST uch *sig)
+{
+    return (((ulg)sig[0]) << 24)
+         + (((ulg)sig[1]) << 16)
+         + (((ulg)sig[2]) << 8)
+         +  ((ulg)sig[3]);
+}
+
+
+
+
+/*
+** Return a unsigned short from a two-byte sequence
+** in big endian format
+*/
+
+ush makePPCword(ZCONST uch *b)
+{
+    return (ush)((b[0] << 8) | b[1]);
+}
+
+
+
+
+/*
+** Print mac extra-field
 **
 */
 
-int wild(char *Pathpat)
-                /* path/pattern to match */
-/* If not in exclude mode, expand the pattern based on the contents of the
-   file system.  Return an error code in the ZE_ class. */
+static void PrintMacExtraInfo(MACINFO *mi)
 {
-FSSpec Spec;
-char fullpath[NAME_MAX];
-OSErr   err;
+#define MY_FNDRINFO fpb.hFileInfo.ioFlFndrInfo
+    DateTimeRec  MacTime;
+    static ZCONST char space[] = "                                    ";
+    static ZCONST char line[]  = "------------------------------------"\
+                                 "------------------------------";
 
-AssertStr(Pathpat, Pathpat);
+    printf("\n\n%s", line);
 
-if (noisy) printf("%s \n\n",GetZipVersionsInfo());
+    printf("\nFullPath      = [%s]", mi->FullPath);
+    printf("\nFinderComment = [%s]", mi->FinderComment);
+    printf("\nText Encoding Base (Filename)       \"%s\" \n",
+        PrintTextEncoding(mi->fpb.hFileInfo.ioFlXFndrInfo.fdScript));
 
-if (extra_fields == 0)
+    printf("\nExtraField Flags :                  %s  0x%x  %4d",
+             sBit2Str(mi->flags), mi->flags, mi->flags);
+
+    printf("\n%sExtra Field is %s", space,
+           (mi->flags & EB_M3_FL_UNCMPR ?
+            "Uncompressed" : "Compressed"));
+    printf("\n%sFile Dates are in %u Bit", space,
+           (mi->flags & EB_M3_FL_TIME64 ? 64 : 32));
+    printf("\n%sFile UTC time adjustments are %ssupported", space,
+           (mi->flags & EB_M3_FL_NOUTC ? "not " : ""));
+    printf("\n%sFile Name is %schanged", space,
+           (mi->flags & EB_M3_FL_NOCHANGE ? "not " : ""));
+    printf("\n%sFile is a %s\n", space,
+           (mi->flags & EB_M3_FL_DATFRK ?
+            "Datafork" : "Resourcefork"));
+
+    /* not all type / creator codes are printable */
+    if (isprint((char)(mi->MY_FNDRINFO.fdType >> 24)) &&
+        isprint((char)(mi->MY_FNDRINFO.fdType >> 16)) &&
+        isprint((char)(mi->MY_FNDRINFO.fdType >> 8)) &&
+        isprint((char)mi->MY_FNDRINFO.fdType))
     {
-    MacZip.DataForkOnly = true;
+        printf("\nFile Type =                         [%c%c%c%c]  0x%lx",
+            (char)(mi->MY_FNDRINFO.fdType >> 24),
+            (char)(mi->MY_FNDRINFO.fdType >> 16),
+            (char)(mi->MY_FNDRINFO.fdType >> 8),
+            (char)(mi->MY_FNDRINFO.fdType),
+            mi->MY_FNDRINFO.fdType);
+    }
+    else
+    {
+        printf("\nFile Type =                                     0x%lx",
+            mi->MY_FNDRINFO.fdType);
     }
 
-/* for switch '-R' -> '.' means current dir */
-if (strcmp(Pathpat,".") == 0) sstrcpy(Pathpat,"*");
-
-sstrcpy(MacZip.Pattern,Pathpat);
-
-if (recurse)
+    if (isprint((char)(mi->MY_FNDRINFO.fdCreator >> 24)) &&
+        isprint((char)(mi->MY_FNDRINFO.fdCreator >> 16)) &&
+        isprint((char)(mi->MY_FNDRINFO.fdCreator >> 8)) &&
+        isprint((char)mi->MY_FNDRINFO.fdCreator))
     {
-    MacZip.StoreFoldersAlso = true;
-    MacZip.SearchLevels = 0; /* if 0 we aren't checking levels */
+        printf("\nFile Creator =                      [%c%c%c%c]  0x%lx",
+            (char)(mi->MY_FNDRINFO.fdCreator >> 24),
+            (char)(mi->MY_FNDRINFO.fdCreator >> 16),
+            (char)(mi->MY_FNDRINFO.fdCreator >> 8),
+            (char)(mi->MY_FNDRINFO.fdCreator),
+            mi->MY_FNDRINFO.fdCreator);
+    }
+    else
+    {
+        printf("\nFile Creator =                                  0x%lx",
+            mi->MY_FNDRINFO.fdCreator);
+    }
+
+    printf("\n\nDates (local time of archiving location):");
+    SecondsToDate(mi->fpb.hFileInfo.ioFlCrDat, &MacTime);
+    printf("\n    Created  =                      %4d/%2d/%2d %2d:%2d:%2d  ",
+           MacTime.year, MacTime.month, MacTime.day,
+           MacTime.hour, MacTime.minute, MacTime.second);
+    SecondsToDate(mi->fpb.hFileInfo.ioFlMdDat, &MacTime);
+    printf("\n    Modified =                      %4d/%2d/%2d %2d:%2d:%2d  ",
+           MacTime.year, MacTime.month, MacTime.day,
+           MacTime.hour, MacTime.minute, MacTime.second);
+    SecondsToDate(mi->fpb.hFileInfo.ioFlBkDat, &MacTime);
+    printf("\n    Backup   =                      %4d/%2d/%2d %2d:%2d:%2d  ",
+        MacTime.year, MacTime.month, MacTime.day,
+        MacTime.hour, MacTime.minute, MacTime.second);
+
+    if (!(mi->flags & EB_M3_FL_NOUTC)) {
+        printf("\nGMT Offset of Creation time  =      %4ld sec  %2d h",
+          mi->Cr_UTCoffs, (int)mi->Cr_UTCoffs / (60 * 60));
+        printf("\nGMT Offset of Modification time  =  %4ld sec  %2d h",
+          mi->Md_UTCoffs, (int)mi->Md_UTCoffs / (60 * 60));
+        printf("\nGMT Offset of Backup time  =        %4ld sec  %2d h",
+          mi->Bk_UTCoffs, (int)mi->Bk_UTCoffs / (60 * 60));
+    }
+
+    printf("\n\nFinder Flags :                      %s  0x%x  %4d",
+        sBit2Str(mi->MY_FNDRINFO.fdFlags),
+        mi->MY_FNDRINFO.fdFlags,
+        mi->MY_FNDRINFO.fdFlags);
+
+    printf("\nFinder Icon Position =              X: %4d",
+        mi->MY_FNDRINFO.fdLocation.h);
+
+    printf("\n                                    Y: %4d",
+        mi->MY_FNDRINFO.fdLocation.v);
+
+    printf("\n\nText Encoding Base (System/MacZip)  \"%s\"",
+        PrintTextEncoding(mi->TextEncodingBase));
+
+    printf("\n%s\n", line);
+#undef MY_FNDRINFO
+}
+
+
+
+
+/*
+** Decode mac extra-field and assign the data to the structure
+**
+*/
+
+static Boolean GetExtraFieldData(short *MacZipMode, MACINFO *mi)
+{
+uch *ptr;
+int  retval = PK_OK;
+
+ptr = scanMacOSexfield(G.extra_field, G.lrec.extra_field_length, MacZipMode);
+
+/* MacOS is no preemptive OS therefore do some (small) event-handling */
+UserStop();
+
+if (uO.J_flag)
+    {
+    *MacZipMode = UnKnown_EF;
+    IgnoreEF_Macfilename = true;
+    return false;
+    }
+
+if (ptr != NULL)
+{   /*   Collect the data from the extra field buffer. */
+    mi->header    = makeword(ptr);    ptr += 2;
+    mi->data      = makeword(ptr);    ptr += 2;
+
+    switch (*MacZipMode)
+        {
+        case NewZipMode_EF:
+           {
+            mi->size      =  makelong(ptr); ptr += 4;
+            mi->flags     =  makeword(ptr); ptr += 2;
+                             /* Type/Creator are always uncompressed */
+            mi->fpb.hFileInfo.ioFlFndrInfo.fdType    = makePPClong(ptr);
+            ptr += 4;
+            mi->fpb.hFileInfo.ioFlFndrInfo.fdCreator = makePPClong(ptr);
+            ptr += 4;
+
+            if (!(mi->flags & EB_M3_FL_UNCMPR))
+                {
+
+                retval = memextract(__G__ attrbuff, mi->size, ptr,
+                                    mi->data - EB_MAC3_HLEN);
+
+                if (retval != PK_OK)  /* error uncompressing attributes */
+                    {
+                    Info(slide, 0x201, ((char *)slide,
+                         LoadFarString(ErrUncmpEF)));
+                    *MacZipMode = UnKnown_EF;
+                    return false;     /* EF-Block unusable, ignore it */
+                    }
+
+                }
+             else
+                {   /* file attributes are uncompressed */
+                attrbuff = ptr;
+                }
+
+            DecodeMac3ExtraField(attrbuff, mi);
+
+            return true;
+            break;
+            }
+
+        case JohnnyLee_EF:
+            {
+            if (strncmp((char *)ptr, "JLEE", 4) == 0)
+                {   /* Johnny Lee's old MacZip e.f. was found */
+                attrbuff  = ptr + 4;
+                DecodeJLEEextraField(attrbuff, mi);
+                return true;
+                }
+            else
+                {   /* second signature did not match, ignore EF block */
+                *MacZipMode = UnKnown_EF;
+                return false;
+                }
+            break;
+            }
+
+
+        case TomBrownZipIt1_EF:
+        case TomBrownZipIt2_EF:
+            {
+            if (strncmp((char *)ptr, "ZPIT", 4) == 0)
+                {   /* Johnny Lee's old MacZip e.f. was found */
+                attrbuff  = ptr + 4;
+                DecodeZPITextraField(attrbuff, mi);
+                return true;
+                }
+            else
+                {   /* second signature did not match, ignore EF block */
+                *MacZipMode = UnKnown_EF;
+                return false;
+                }
+            break;
+            }
+
+
+        default:
+            {  /* just to make sure */
+            *MacZipMode = UnKnown_EF;
+            IgnoreEF_Macfilename = true;
+            return false;
+            break;
+            }
+        }
+}  /* if (ptr != NULL)  */
+
+/* no Mac extra field was found */
+return false;
+}
+
+
+
+
+/*
+** Assign the new Mac3 Extra-Field to the structure
+**
+*/
+
+static void DecodeMac3ExtraField(ZCONST uch *buff, MACINFO *mi)
+{               /* extra-field info of the new MacZip implementation */
+                /* compresssed extra-field starts here (if compressed) */
+
+Assert_it(buff, "", "");
+
+mi->fpb.hFileInfo.ioFlFndrInfo.fdFlags        =  makeword(buff); buff += 2;
+mi->fpb.hFileInfo.ioFlFndrInfo.fdLocation.v   =  makeword(buff); buff += 2;
+mi->fpb.hFileInfo.ioFlFndrInfo.fdLocation.h   =  makeword(buff); buff += 2;
+mi->fpb.hFileInfo.ioFlFndrInfo.fdFldr         =  makeword(buff); buff += 2;
+
+mi->fpb.hFileInfo.ioFlXFndrInfo.fdIconID      =  makeword(buff); buff += 2;
+mi->fpb.hFileInfo.ioFlXFndrInfo.fdReserved[0] =  makeword(buff); buff += 2;
+mi->fpb.hFileInfo.ioFlXFndrInfo.fdReserved[1] =  makeword(buff); buff += 2;
+mi->fpb.hFileInfo.ioFlXFndrInfo.fdReserved[2] =  makeword(buff); buff += 2;
+mi->fpb.hFileInfo.ioFlXFndrInfo.fdScript      = *buff;           buff += 1;
+mi->fpb.hFileInfo.ioFlXFndrInfo.fdXFlags      = *buff;           buff += 1;
+mi->fpb.hFileInfo.ioFlXFndrInfo.fdComment     =  makeword(buff); buff += 2;
+mi->fpb.hFileInfo.ioFlXFndrInfo.fdPutAway     =  makelong(buff); buff += 4;
+
+mi->fpb.hFileInfo.ioFVersNum                  = *buff;           buff += 1;
+mi->fpb.hFileInfo.ioACUser                    = *buff;           buff += 1;
+
+/*
+This implementation does not use the 64 bit time values, therefore
+use the UT extra field instead
+*/
+if (mi->flags & EB_M3_FL_TIME64)
+    {
+    Info(slide, 0x201, ((char *)slide, LoadFarString(No64Time)));
+    UseUT_ExtraField = true;
+    buff += 24; /* jump over the date values */
     }
 else
     {
-    MacZip.StoreFoldersAlso = false;
-    MacZip.SearchLevels = 1;
+    UseUT_ExtraField = false;
+    mi->fpb.hFileInfo.ioFlCrDat   =  makelong(buff); buff += 4;
+    mi->fpb.hFileInfo.ioFlMdDat   =  makelong(buff); buff += 4;
+    mi->fpb.hFileInfo.ioFlBkDat   =  makelong(buff); buff += 4;
     }
 
-/* make complete path */
-GetCompletePath(fullpath, MacZip.Pattern, &Spec,&err);
-err = PrintUserHFSerr((err != -43) && (err != 0), err, MacZip.Pattern);
-printerr("GetCompletePath:", err, err, __LINE__, __FILE__, fullpath);
+if (!(mi->flags & EB_M3_FL_NOUTC))
+    {
+    mi->Cr_UTCoffs =  makelong(buff); buff += 4;
+    mi->Md_UTCoffs =  makelong(buff); buff += 4;
+    mi->Bk_UTCoffs =  makelong(buff); buff += 4;
+    }
 
-/* extract the filepattern */
-GetFilename(MacZip.Pattern, fullpath);
+/* TextEncodingBase type & values */
+/* (values 0-32 correspond to the Script Codes defined in "Inside Macintosh",
+    Text pages 6-52 and 6-53) */
+mi->TextEncodingBase =  makeword(buff); buff += 2;
 
-/* extract Path and get FSSpec of search-path */
-/* get FSSpec of search-path  ; we need a dir to start
-   searching for filenames */
-TruncFilename(MacZip.SearchDir, fullpath);
-GetCompletePath(MacZip.SearchDir, MacZip.SearchDir, &Spec,&err);
+if (mi->TextEncodingBase >= kTextEncodingUnicodeV1_1)
+    {
+    Info(slide, 0x201, ((char *)slide, LoadFarString(NoUniCode)));
+    IgnoreEF_Macfilename = true;
+    }
 
-if (noisy) {
-    if (MacZip.SearchLevels == 0)
-        {
-        printf("\nSearch Pattern: [%s]   Levels: all", MacZip.Pattern);
+mi->FullPath      = (char *)buff; buff += strlen(mi->FullPath) + 1;
+mi->FinderComment = (char *)buff; buff += strlen(mi->FinderComment) + 1;
+
+if (uO.i_flag) IgnoreEF_Macfilename = true;
+
+}
+
+
+
+
+/*
+** Assign the new JLEE Extra-Field to the structure
+**
+*/
+
+static void DecodeJLEEextraField(ZCONST uch *buff, MACINFO *mi)
+{ /*  extra-field info of Johnny Lee's old MacZip  */
+
+Assert_it(buff, "", "");
+
+mi->fpb.hFileInfo.ioFlFndrInfo.fdType       = makePPClong(buff); buff += 4;
+mi->fpb.hFileInfo.ioFlFndrInfo.fdCreator    = makePPClong(buff); buff += 4;
+mi->fpb.hFileInfo.ioFlFndrInfo.fdFlags      = makePPCword(buff); buff += 2;
+mi->fpb.hFileInfo.ioFlFndrInfo.fdLocation.v = makePPCword(buff); buff += 2;
+mi->fpb.hFileInfo.ioFlFndrInfo.fdLocation.h = makePPCword(buff); buff += 2;
+mi->fpb.hFileInfo.ioFlFndrInfo.fdFldr       = makePPCword(buff); buff += 2;
+
+mi->fpb.hFileInfo.ioFlCrDat                =  makePPClong(buff); buff += 4;
+mi->fpb.hFileInfo.ioFlMdDat                =  makePPClong(buff); buff += 4;
+mi->flags                                  =  makePPClong(buff); buff += 4;
+
+newExtraField.fpb.hFileInfo.ioFlXFndrInfo.fdScript = smSystemScript;
+}
+
+
+
+
+/*
+** Assign the new JLEE Extra-Field to the structure
+**
+*/
+
+static void DecodeZPITextraField(ZCONST uch *buff, MACINFO *mi)
+{ /*  extra-field info of Johnny Lee's old MacZip  */
+unsigned char filelen;
+
+Assert_it(buff, "", "");
+
+#ifdef SwitchZIPITefSupportOff
+MacZipMode = UnKnown_EF;
+Info(slide, 0x221, ((char *)slide,LoadFarString(ZitIt_EF)));
+return;
+#endif
+
+if (MacZipMode == TomBrownZipIt1_EF)
+    {
+    filelen = *buff;
+    newExtraField.filename = buff;
+    buff += 1;
+    buff += filelen;
+    mi->fpb.hFileInfo.ioFlFndrInfo.fdType       = makePPClong(buff);
+    buff += 4;
+    mi->fpb.hFileInfo.ioFlFndrInfo.fdCreator    = makePPClong(buff);
+    buff += 4;
+    }
+else   /*  if (MacZipMode == TomBrownZipIt2_EF)  */
+    {
+    mi->fpb.hFileInfo.ioFlFndrInfo.fdType       = makePPClong(buff);
+    buff += 4;
+    mi->fpb.hFileInfo.ioFlFndrInfo.fdCreator    = makePPClong(buff);
+    buff += 4;
+    }
+
+newExtraField.fpb.hFileInfo.ioFlXFndrInfo.fdScript = smSystemScript;
+}
+
+
+
+/*
+** Return char* to describe the text encoding
+**
+*/
+
+static char *PrintTextEncoding(short script)
+{
+char *info;
+static char buffer[14];
+/* TextEncodingBase type & values */
+/* (values 0-32 correspond to the Script Codes defined in
+   Inside Macintosh: Text pages 6-52 and 6-53 */
+
+switch (script) {               /* Mac OS encodings*/
+    case kTextEncodingMacRoman:         info = "Roman";             break;
+    case kTextEncodingMacJapanese:      info = "Japanese";          break;
+    case kTextEncodingMacChineseTrad:   info = "ChineseTrad";       break;
+    case kTextEncodingMacKorean:        info = "Korean";            break;
+    case kTextEncodingMacArabic:        info = "Arabic";            break;
+    case kTextEncodingMacHebrew:        info = "Hebrew";            break;
+    case kTextEncodingMacGreek:         info = "Greek";             break;
+    case kTextEncodingMacCyrillic:      info = "Cyrillic";          break;
+    case kTextEncodingMacDevanagari:    info = "Devanagari";        break;
+    case kTextEncodingMacGurmukhi:      info = "Gurmukhi";          break;
+    case kTextEncodingMacGujarati:      info = "Gujarati";          break;
+    case kTextEncodingMacOriya:         info = "Oriya";             break;
+    case kTextEncodingMacBengali:       info = "Bengali";           break;
+    case kTextEncodingMacTamil:         info = "Tamil";             break;
+    case kTextEncodingMacTelugu:        info = "Telugu";            break;
+    case kTextEncodingMacKannada:       info = "Kannada";           break;
+    case kTextEncodingMacMalayalam:     info = "Malayalam";         break;
+    case kTextEncodingMacSinhalese:     info = "Sinhalese";         break;
+    case kTextEncodingMacBurmese:       info = "Burmese";           break;
+    case kTextEncodingMacKhmer:         info = "Khmer";             break;
+    case kTextEncodingMacThai:          info = "Thai";              break;
+    case kTextEncodingMacLaotian:       info = "Laotian";           break;
+    case kTextEncodingMacGeorgian:      info = "Georgian";          break;
+    case kTextEncodingMacArmenian:      info = "Armenian";          break;
+    case kTextEncodingMacChineseSimp:   info = "ChineseSimp";       break;
+    case kTextEncodingMacTibetan:       info = "Tibetan";           break;
+    case kTextEncodingMacMongolian:     info = "Mongolian";         break;
+    case kTextEncodingMacEthiopic:      info = "Ethiopic";          break;
+    case kTextEncodingMacCentralEurRoman: info = "CentralEurRoman"; break;
+    case kTextEncodingMacVietnamese:    info = "Vietnamese";        break;
+    case kTextEncodingMacExtArabic:     info = "ExtArabic";         break;
+
+    case kTextEncodingUnicodeV1_1:      info = "Unicode V 1.1";     break;
+    case kTextEncodingUnicodeV2_0:      info = "Unicode V 2.0";     break;
+
+    default:  {
+        sprintf(buffer,"Code: 0x%x",(short) script);
+        info = buffer;
+        break;
+        }
+    }
+
+return info;
+}
+
+
+
+/*
+** Init Globals
+**
+*/
+
+void   MacGlobalsInit(__GPRO)
+{
+newExtraField.FullPath      = NULL;
+newExtraField.FinderComment = NULL;
+
+OpenZipFile = true;
+
+MacZipMode = UnKnown_EF;
+IgnoreEF_Macfilename = true;
+
+if (malloced_attrbuff == NULL)
+    {
+    /* make room for extra-field */
+    attrbuff = (uch *)malloc(EB_MAX_OF_VARDATA);
+
+    if (attrbuff == NULL)
+        {             /* No memory to uncompress attributes */
+        Info(slide, 0x201, ((char *)slide, LoadFarString(OutOfMemEF)));
+        exit(PK_MEM);
         }
     else
         {
-        printf("\nSearch Pattern: [%s]   Levels: %d", MacZip.Pattern,
-               MacZip.SearchLevels);
+        malloced_attrbuff = attrbuff;
         }
-    printf("\nSearch Path:    [%s]", MacZip.SearchDir);
-    printf("\nZip-File:       [%s] \n",MacZip.ZipFullPath);
-
-}
-
-/* we are working only with pathnames;
- * this can cause big problems on a mac ...
- */
-if (CheckMountedVolumes(MacZip.SearchDir) > 1)
-    DoWarnUserDupVol(MacZip.SearchDir);
-
-/* start getting all filenames */
-err = FSpRecurseDirectory(&Spec, MacZip.SearchLevels);
-printerr("FSpRecurseDirectory:", err, err, __LINE__, __FILE__, "");
-
-return ZE_OK;
-}
-
-
-
-/*
-** Convert the internal filename into a external (native).
-** The user will see this modified filename.
-** For more performance:
-** I do not completly switch back to the native macos filename.
-** The user will still see directory separator '/' and the converted
-** charset.
-*/
-
-char *in2ex(char *n)    /* internal file name */
-/* Convert the zip file name to an external file name, returning the malloc'ed
-   string or NULL if not enough memory. */
-{
-  char *x;              /* external file name */
-
-  AssertStr(n,n)
-
-  if ((x = malloc(strlen(n) + 1)) == NULL)
-    return NULL;
-
-  RfDfFilen2Real(x, n, MacZip.MacZipMode, MacZip.DataForkOnly,
-                 &MacZip.CurrentFork);
-
-  return x;
-}
-
-
-
-
-/*
-** Process on filenames. This function will be called to collect
-** the filenames.
-*/
-
-int procname(char *filename,         /* name to process */
-             int caseflag)           /* true to force case-sensitive match
-                                        (always false on a Mac) */
-/* Process a name .  Return
-   an error code in the ZE_ class. */
-{
-  int rc;                /* matched flag */
-
-AssertBool(caseflag,"caseflag")
-AssertStr(filename,filename)
-
-        /* add or remove name of file */
-rc = newname(filename, MacZip.isDirectory, caseflag);
-
-return rc;
-}
-
-
-
-
-ulg filetime(
-char *f,                /* name of file to get info on */
-ulg *a,                 /* return value: file attributes */
-long *n,                /* return value: file size */
-iztimes *t)             /* return value: access, modific. and creation times */
-/* If file *f does not exist, return 0.  Else, return the file's last
-   modified date and time as an MSDOS date and time.  The date and
-   time is returned in a long with the date most significant to allow
-   unsigned integer comparison of absolute times.  Also, if a is not
-   a NULL pointer, store the file attributes there, with the high two
-   bytes being the Unix attributes, and the low byte being a mapping
-   of that to DOS attributes.  If n is not NULL, store the file size
-   there.  If t is not NULL, the file's access, modification and creation
-   times are stored there as UNIX time_t values.
-   If f is "-", use standard input as the file. If f is a device, return
-   a file size of -1 */
-{
-  struct stat s;        /* results of stat() */
-
-  AssertStr(f,f)
-
-  if (strlen(f) == 0) return 0;
-
-  if (SSTAT(f, &s) != 0)
-             /* Accept about any file kind including directories
-              * (stored with trailing : with -r option)
-              */
-    return 0;
-
-  if (a != NULL) {
-    *a = ((ulg)s.st_mode << 16) | !(s.st_mode & S_IWRITE);
-    if (MacZip.isDirectory) {
-      *a |= MSDOS_DIR_ATTR;
-    }
-  }
-  if (n != NULL)
-    *n = (s.st_mode & UNX_IFMT) == UNX_IFREG ? s.st_size : -1L;
-  if (t != NULL) {
-    t->atime = s.st_atime;
-    t->mtime = s.st_mtime;
-    t->ctime = s.st_ctime;   /* on Mac, st_ctime contains creation time! */
-  }
-
-  return unix2dostime(&s.st_mtime);
-}
-
-
-
-void stamp(char *f, ulg d)
-/* char *f;                name of file to change */
-/* ulg d;                  dos-style time to change it to */
-/* Set last updated and accessed time of file f to the DOS time d. */
-{
-  time_t u[2];          /* argument for utime() */
-
-f = f;
-
-  /* Convert DOS time to time_t format in u */
-
-  u[0] = u[1] = dos2unixtime(d);
-/*  utime(f, u);  */
-}
-
-
-
-
-/*
-**  return only the longest part of the path:
-**  second parameter: Volume:test folder:second folder:
-**  third parameter:  Volume:test folder:second folder:third folder:file
-**  result will be:   third folder:file
-**  first parameter:  contains string buffer that will be used to prepend
-**                    the "resource mark" part in front of the result when
-**                    a resource fork is processed in "M3" mode.
-**
-*/
-
-char *StripPartialDir(char *CompletePath,
-                      const char *PartialPath, const char *FullPath)
-{
-const char *tmpPtr1 = PartialPath;
-const char *tmpPtr2 = FullPath;
-int     result;
-
-Assert_it(CompletePath,"StripPartialDir","")
-AssertStrNoOverlap(FullPath,PartialPath,PartialPath)
-
-if (MacZip.DataForkOnly)
-        {
-        tmpPtr2 += strlen(tmpPtr1);
-        return (char *)tmpPtr2;
-        }
-
-switch (MacZip.MacZipMode)
-    {
-    case JohnnyLee_EF:
-        {
-        tmpPtr2 += strlen(tmpPtr1);
-        return (char *)tmpPtr2;
-        break;
-        }
-
-    case NewZipMode_EF:
-        {           /* determine Fork type */
-        result = strncmp(FullPath, ResourceMark, sizeof(ResourceMark)-2);
-        if (result != 0)
-            {                               /* data fork  */
-            MacZip.CurrentFork = DataFork;
-            tmpPtr2 += strlen(tmpPtr1);
-             return (char *)tmpPtr2;
-            }
-        else
-            {                                /* resource fork  */
-            MacZip.CurrentFork = ResourceFork;
-            sstrcpy(CompletePath, ResourceMark);
-            tmpPtr2 += strlen(tmpPtr1);
-            tmpPtr2 += sizeof(ResourceMark);
-            sstrcat(CompletePath, tmpPtr2);
-            return (char *)CompletePath;
-            }
-        break;
-        }
-    }
-
- return NULL;    /* function should never reach this point */
-}
-
-
-
-
-/*
-** Init all global variables
-** Must be called for each zip-run
-*/
-
-void ZipInitAllVars(void)
-{
-getcwd(MacZip.CurrentPath, sizeof(MacZip.CurrentPath));
-/* MacZip.MacZipMode = JohnnyLee_EF;     */
-MacZip.MacZipMode = NewZipMode_EF;
-
-MacZip.DataForkOnly = false;
-MacZip.CurrentFork = NoFork;
-
-MacZip.StoreFoldersAlso = false;
-
-MacZip.FoundFiles = 0;
-MacZip.FoundDirectories = 0;
-MacZip.RawCountOfItems = 0;
-MacZip.BytesOfData = 0;
-
-MacZip.StoreFullPath = false;
-MacZip.StatingProgress = false;
-MacZip.IncludeInvisible = false;
-
-MacZip.isMacStatValid = false;
-
-MacZip.CurrTextEncodingBase = FontScript();
-
-MacZip.HaveGMToffset = false;
-
-createTime = TickCount();
-estTicksToFinish = -1;
-updateTicks = 0;
-
-/* init some functions */
-IsZipFile(NULL);
-
-destroy(NULL);
-deletedir(NULL);
-ShowCounter(true);
-
-extra_fields = 1;
-error_level = 0;
-count_of_Zippedfiles = 0;
-}
-
-
-
-
-/*
-** Get the findercomment and store it as file-comment in the Zip-file
-**
-*/
-char *GetComment(char *filename)
-{
-OSErr       err;
-static char buffer[NAME_MAX];
-char buffer2[NAME_MAX];
-char *tmpPtr;
-
-if (filename == NULL) return NULL;
-
-    /* now we can convert Unix-Path in HFS-Path */
-for (tmpPtr = filename; *tmpPtr; tmpPtr++)
-    if (*tmpPtr == '/')
-      *tmpPtr = ':';
-
-if (MacZip.StoreFullPath)
-    {  /* filename is already a fullpath */
-    sstrcpy(buffer,filename);
-    }
-else
-    {  /* make a fullpath */
-    sstrcpy(buffer,MacZip.SearchDir);
-    sstrcat(buffer,filename);
-    }
-
-/* make fullpath and get FSSpec */
-/* Unfortunately: I get only the converted filename here */
-/* so filenames with extended characters can not be found  */
-GetCompletePath(buffer2,buffer, &MacZip.fileSpec, &err);
-printerr("GetCompletePath:",(err != -43) && (err != -120) && (err != 0) ,
-          err,__LINE__,__FILE__,buffer);
-
-err = FSpDTGetComment(&MacZip.fileSpec, (unsigned char *) buffer);
-printerr("FSpDTGetComment:", (err != -5012) && (err != 0), err,
-         __LINE__, __FILE__, filename);
-P2CStr((unsigned char *) buffer);
-if (err == -5012) return NULL;  /* no finder-comments found */
-
-if (noisy) printf("\n%32s -> %s",filename, buffer);
-/*
-Beside the script change we need only to change 0x0d in 0x0a
-so the last two arguments are not needed and does nothing.
-*/
-MakeCompatibleString(buffer, 0x0d, 0x0a, ' ', ' ',
-                     MacZip.CurrTextEncodingBase);
-
-return buffer;
-}
-
-
-
-
-/*
-** Print a progress indicator for stating the files
-**
-*/
-
-void PrintStatProgress(char *msg)
-{
-
-if (!noisy) return;     /* do no output if noisy is false */
-
-MacZip.StatingProgress = true;
-
-if (strcmp(msg,"done") == 0)
-    {
-    MacZip.StatingProgress = false;
-    printf("\n ... done \n\n");
-    }
-else printf("\n %s",msg);
-
-}
-
-
-
-
-void InformProgress(const long progressMax, const long progressSoFar )
-{
-int curr_percent;
-char no_time[5] = "...";
-
-curr_percent = percent(progressMax, progressSoFar);
-
-if (curr_percent < 95)
-    {
-    estTicksToFinish = EstimateCompletionTime(progressMax,
-                                                  progressSoFar, curr_percent);
     }
 else
     {
-    rightStatusString(no_time);
-    leftStatusString(no_time);
+    attrbuff = malloced_attrbuff;
     }
 
-updateTicks = TickCount() + 60;
-return;
 }
-
-
-void ShowCounter(Boolean reset)
-{
-static char statusline[100];
-static unsigned long filecount = 0;
-
-if (reset)
-        {
-        filecount = 0;
-        return;
-        }
-
-if (noisy)
-    {
-    sprintf(statusline, "%6d", filecount++);
-    rightStatusString(statusline);
-    }
-}
-
-
-static long EstimateCompletionTime(const long progressMax,
-                                const long progressSoFar,
-                                unsigned char curr_percent)
-{
-    long  max = progressMax, value = progressSoFar;
-    static char buf[100];
-    unsigned long ticksTakenSoFar = TickCount() - createTime;
-    float currentRate = (float) ticksTakenSoFar / (float) value;
-    long  newEst = (long)( currentRate * (float)( max - value ));
-
-    sprintf(buf, "%d [%d%%]",progressSoFar, curr_percent);
-    rightStatusString(buf);
-
-    estTicksToFinish = newEst;
-
-    UpdateTimeToComplete();
-
-return estTicksToFinish;
-}
-
-
-
-
-
-static void UpdateTimeToComplete(void)
-{
-    short       days, hours, minutes, seconds;
-    char    estStr[255];
-    Str15   xx, yy;
-    short   idx = 0;
-
-    if ( estTicksToFinish == -1 )
-        return;
-
-    days    =   estTicksToFinish / 5184000L;
-    hours   = ( estTicksToFinish - ( days * 5184000L )) / 216000L;
-    minutes = ( estTicksToFinish - ( days * 5184000L ) -
-              ( hours * 216000L )) / 3600L;
-    seconds = ( estTicksToFinish - ( days * 5184000L ) -
-              ( hours * 216000L ) - ( minutes * 3600L )) / 60L;
-
-        xx[0] = 0;
-        yy[0] = 0;
-
-        if ( days )
-        {
-            /* "more than 24 hours" */
-
-            idx = 1;
-            goto setEstTimeStr;
-        }
-
-        if ( hours >= 8 )
-        {
-            /* "more than x hours" */
-
-            NumToString( hours, xx );
-            idx = 2;
-            goto setEstTimeStr;
-        }
-
-        if ( estTicksToFinish > 252000L  )      /* > 1hr, 10 minutes */
-        {
-            /* "about x hours, y minutes" */
-
-            NumToString( hours, xx );
-            NumToString( minutes, yy );
-            idx = 3;
-            goto setEstTimeStr;
-        }
-
-        if ( estTicksToFinish > 198000L )   /* > 55 minutes */
-        {
-            /* "about an hour" */
-            idx = 4;
-            goto setEstTimeStr;
-        }
-
-        if ( estTicksToFinish > 144000L )   /* > 40 minutes */
-        {
-            /* "less than an hour" */
-
-            idx = 5;
-            goto setEstTimeStr;
-        }
-
-        if ( estTicksToFinish > 4200L )     /* > 1 minute, 10 sec */
-        {
-            /* "about x minutes, y seconds */
-
-            NumToString( minutes, xx );
-            NumToString( seconds, yy );
-
-            if ( minutes == 1 )
-                idx = 11;
-            else
-                idx = 6;
-            goto setEstTimeStr;
-        }
-
-        if ( estTicksToFinish > 3000L )     /* > 50 seconds */
-        {
-            /* "about a minute" */
-
-            idx = 7;
-            goto setEstTimeStr;
-        }
-
-        if ( estTicksToFinish > 1500L )     /* > 25 seconds */
-        {
-            /* "less than a minute" */
-
-            idx = 8;
-            goto setEstTimeStr;
-        }
-
-        if ( estTicksToFinish > 120L )      /* > 2 seconds */
-        {
-            NumToString( seconds, xx );
-            idx = 9;
-            goto setEstTimeStr;
-        }
-
-        idx = 10;
-
-    setEstTimeStr:
-        sprintf(estStr,Time_Est_strings[idx],P2CStr(xx),P2CStr(yy));
-        leftStatusString((char *)estStr);
-}
-
-
-
-
-
-/*
-** Just return the zip version
-**
-*/
-
-char *GetZipVersionsInfo(void)
-{
-static char ZipVersion[100];
-
-sprintf(ZipVersion, "Zip Module\n%d.%d%d%s of %s", Z_MAJORVER, Z_MINORVER,
-        Z_PATCHLEVEL, Z_BETALEVEL, REVDATE);
-
-return ZipVersion;
-}
-
-
-
-
-#ifndef USE_SIOUX
-
-/*
-** Just return the copyright message
-**
-*/
-
-char *GetZipCopyright(void)
-{
-static char CopyR[300];
-
-sstrcpy(CopyR, copyright[0]);
-sstrcat(CopyR, copyright[1]);
-sstrcat(CopyR, "\r\rPlease send bug reports to the authors at\r"\
-              "Zip-Bugs@lists.wku.edu");
-
-return CopyR;
-}
-
-
-
-
-/*
-** Just return the compilers date/time
-**
-*/
-
-char *GetZipVersionLocal(void)
-{
-static char ZipVersionLocal[50];
-
-sprintf(ZipVersionLocal, "[%s %s]", __DATE__, __TIME__);
-
-return ZipVersionLocal;
-}
-
-#endif  /*   #ifndef USE_SIOUX  */
-
-
 
 

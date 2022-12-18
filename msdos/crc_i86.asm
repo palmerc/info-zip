@@ -1,12 +1,12 @@
 ;===========================================================================
-; Copyright (c) 1990-2007 Info-ZIP.  All rights reserved.
+; Copyright (c) 1990-2001 Info-ZIP.  All rights reserved.
 ;
 ; See the accompanying file LICENSE, version 2000-Apr-09 or later
 ; (the contents of which are also included in zip.h) for terms of use.
 ; If, for some reason, all these files are missing, the Info-ZIP license
 ; also may be found at:  ftp://ftp.info-zip.org/pub/infozip/license.html
 ;===========================================================================
-; Created by Christian Spieler, last modified 07 Jan 2007.
+; Created by Christian Spieler, last modified 24 Dec 1998.
 ;
         TITLE   crc_i86.asm
         NAME    crc_i86
@@ -39,10 +39,6 @@
 ; Likewise, "jcxz" was replaced by "jz", because the latter is faster on
 ; 486 and newer CPUs (without any penalty on 80286 and older CPU models).
 ;
-; In January 2007, the "hand-made" memory model setup section has been guarded
-; against redefinition of @CodeSize and @DataSize symbols, to work around a
-; problem with current Open Watcom (version 1.6) wasm assembler.
-;
 ; The code in this module should work with all kinds of C memory models
 ; (except Borland's __HUGE__ model), as long as the following
 ; restrictions are not violated:
@@ -60,11 +56,9 @@
 ;
 ;==============================================================================
 ;
-; Do NOT assemble this source if external crc32 routine from zlib gets used,
-; or only the precomputed CRC_32_Table is needed.
+; Do NOT assemble this source if external crc32 routine from zlib gets used.
 ;
 ifndef USE_ZLIB
-ifndef CRC_TABLE_ONLY
 ;
 ; Setup of amount of assemble time informational messages:
 ;
@@ -95,12 +89,8 @@ endif
 
 ifdef __HUGE__
 ; .MODEL Huge
-   ifndef @CodeSize
-    @CodeSize  EQU 1
-   endif
-   ifndef @DataSize
-    @DataSize  EQU 1
-   endif
+   @CodeSize  EQU 1
+   @DataSize  EQU 1
    Save_DS    EQU 1
    if VERBOSE_INFO
     if1
@@ -110,12 +100,8 @@ ifdef __HUGE__
 else
    ifdef __LARGE__
 ;      .MODEL Large
-      ifndef @CodeSize
-       @CodeSize  EQU 1
-      endif
-      ifndef @DataSize
-       @DataSize  EQU 1
-      endif
+      @CodeSize  EQU 1
+      @DataSize  EQU 1
       if VERBOSE_INFO
        if1
          %out Assembling for C, Large memory model
@@ -124,12 +110,8 @@ else
    else
       ifdef __COMPACT__
 ;         .MODEL Compact
-         ifndef @CodeSize
-          @CodeSize  EQU 0
-         endif
-         ifndef @DataSize
-          @DataSize  EQU 1
-         endif
+         @CodeSize  EQU 0
+         @DataSize  EQU 1
          if VERBOSE_INFO
           if1
             %out Assembling for C, Compact memory model
@@ -138,12 +120,8 @@ else
       else
          ifdef __MEDIUM__
 ;            .MODEL Medium
-            ifndef @CodeSize
-             @CodeSize  EQU 1
-            endif
-            ifndef @DataSize
-             @DataSize  EQU 0
-            endif
+            @CodeSize  EQU 1
+            @DataSize  EQU 0
             if VERBOSE_INFO
              if1
                %out Assembling for C, Medium memory model
@@ -151,12 +129,8 @@ else
             endif
          else
 ;            .MODEL Small
-            ifndef @CodeSize
-             @CodeSize  EQU 0
-            endif
-            ifndef @DataSize
-             @DataSize  EQU 0
-            endif
+            @CodeSize  EQU 0
+            @DataSize  EQU 0
             if VERBOSE_INFO
              if1
                %out Assembling for C, Small memory model
@@ -191,11 +165,6 @@ endif
 ; Selection of the supported CPU instruction set and initialization
 ; of CPU type related macros:
 ;
-ifdef __686
-        Use_286_code    EQU     1
-        Align_Size      EQU     4       ; dword alignment on Pentium II/III/IV
-        Alig_PARA       EQU     1       ; paragraph aligned code segment
-else
 ifdef __586
         Use_286_code    EQU     1
         Align_Size      EQU     4       ; dword alignment on Pentium
@@ -228,7 +197,6 @@ endif   ;?__286
 endif   ;?__386
 endif   ;?__486
 endif   ;?__586
-endif   ;?__686
 
 ifdef Use_286_code
         .286
@@ -491,7 +459,6 @@ else
 _TEXT   ENDS
 endif
 ;
-endif ;!CRC_TABLE_ONLY
 endif ;!USE_ZLIB
 ;
 END

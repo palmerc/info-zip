@@ -1,9 +1,7 @@
 /*
-  ttyio.c - Zip 3
+  Copyright (c) 1990-2001 Info-ZIP.  All rights reserved.
 
-  Copyright (c) 1990-2005 Info-ZIP.  All rights reserved.
-
-  See the accompanying file LICENSE, version 2005-Feb-10 or later
+  See the accompanying file LICENSE, version 2000-Apr-09 or later
   (the contents of which are also included in zip.h) for terms of use.
   If, for some reason, all these files are missing, the Info-ZIP license
   also may be found at:  ftp://ftp.info-zip.org/pub/infozip/license.html
@@ -52,7 +50,7 @@
 #  define GLOBAL(g) G.g
 #endif
 
-#if (defined(__ATHEOS__) || defined(__BEOS__))  /* why yes, we do */
+#ifdef __BEOS__                /* why yes, we do */
 #  define HAVE_TERMIOS_H
 #endif
 
@@ -334,7 +332,7 @@ void Echon(__G)
 
 #if (defined(UNZIP) && !defined(FUNZIP))
 
-#ifdef ATH_BEO_UNX
+#if (defined(UNIX) || defined(__BEOS__))
 #ifdef MORE
 
 /*
@@ -474,7 +472,7 @@ int zgetch(__G__ f)
 }
 
 
-#else /* !ATH_BEO_UNX */
+#else /* !UNIX && !__BEOS__ */
 #ifndef VMS     /* VMS supplies its own variant of getch() */
 
 
@@ -501,7 +499,7 @@ int zgetch(__G__ f)
 }
 
 #endif /* !VMS */
-#endif /* ?ATH_BEO_UNX */
+#endif /* ?(UNIX || __BEOS__) */
 
 #endif /* UNZIP && !FUNZIP */
 #endif /* !HAVE_WORKING_GETCH */
@@ -586,7 +584,7 @@ char *getp(__G__ m, p, n)
 #else /* !HAVE_WORKING_GETCH */
 
 
-#if (defined(ATH_BEO_UNX) || defined(__MINT__))
+#if (defined(UNIX) || defined(__MINT__) || defined(__BEOS__))
 
 #ifndef _PATH_TTY
 #  ifdef __MINT__
@@ -643,7 +641,7 @@ char *getp(__G__ m, p, n)
 
 } /* end function getp() */
 
-#endif /* ATH_BEO_UNX || __MINT__ */
+#endif /* UNIX || __MINT__ || __BEOS__ */
 
 
 

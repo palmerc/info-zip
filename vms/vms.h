@@ -1,7 +1,7 @@
 /*
-  Copyright (c) 1990-2007 Info-ZIP.  All rights reserved.
+  Copyright (c) 1990-2002 Info-ZIP.  All rights reserved.
 
-  See the accompanying file LICENSE, version 2007-Mar-4 or later
+  See the accompanying file LICENSE, version 2000-Apr-09 or later
   (the contents of which are also included in zip.h) for terms of use.
   If, for some reason, all these files are missing, the Info-ZIP license
   also may be found at:  ftp://ftp.info-zip.org/pub/infozip/license.html
@@ -67,87 +67,6 @@
 #  define FIB$W_EXCTL   fib$r_exctl_overlay.fib$w_exctl
 #endif
 #undef variant_union
-
-
-/* 2005-02-08 SMS.  Moved NAM[L] macros here from VMS.C. */
-
-/* Define macros for use with either NAM or NAML. */
-
-#ifdef NAML$C_MAXRSS            /* NAML is available.  Use it. */
-
-#  define NAM_STRUCT NAML
-
-#  define FAB_OR_NAML( fab, nam) nam
-#  define FAB_OR_NAML_DNA naml$l_long_defname
-#  define FAB_OR_NAML_DNS naml$l_long_defname_size
-#  define FAB_OR_NAML_FNA naml$l_long_filename
-#  define FAB_OR_NAML_FNS naml$l_long_filename_size
-
-#  define CC_RMS_NAM cc$rms_naml
-#  define FAB_NAM fab$l_naml
-#  define NAM_DID naml$w_did
-#  define NAM_DVI naml$t_dvi
-#  define NAM_ESA naml$l_long_expand
-#  define NAM_ESL naml$l_long_expand_size
-#  define NAM_ESS naml$l_long_expand_alloc
-#  define NAM_FID naml$w_fid
-#  define NAM_FNB naml$l_fnb
-#  define NAM_RSA naml$l_long_result
-#  define NAM_RSL naml$l_long_result_size
-#  define NAM_RSS naml$l_long_result_alloc
-#  define NAM_MAXRSS NAML$C_MAXRSS
-#  define NAM_NOP naml$b_nop
-#  define NAM_M_EXP_DEV NAML$M_EXP_DEV
-#  define NAM_M_SYNCHK NAML$M_SYNCHK
-#  define NAM_B_DEV naml$l_long_dev_size
-#  define NAM_L_DEV naml$l_long_dev
-#  define NAM_B_DIR naml$l_long_dir_size
-#  define NAM_L_DIR naml$l_long_dir
-#  define NAM_B_NAME naml$l_long_name_size
-#  define NAM_L_NAME naml$l_long_name
-#  define NAM_B_TYPE naml$l_long_type_size
-#  define NAM_L_TYPE naml$l_long_type
-#  define NAM_B_VER naml$l_long_ver_size
-#  define NAM_L_VER naml$l_long_ver
-
-#else /* def NAML$C_MAXRSS */   /* NAML is not available.  Use NAM. */
-
-#  define NAM_STRUCT NAM
-
-#  define FAB_OR_NAML( fab, nam) fab
-#  define FAB_OR_NAML_DNA fab$l_dna
-#  define FAB_OR_NAML_DNS fab$b_dns
-#  define FAB_OR_NAML_FNA fab$l_fna
-#  define FAB_OR_NAML_FNS fab$b_fns
-
-#  define CC_RMS_NAM cc$rms_nam
-#  define FAB_NAM fab$l_nam
-#  define NAM_DID nam$w_did
-#  define NAM_DVI nam$t_dvi
-#  define NAM_ESA nam$l_esa
-#  define NAM_ESL nam$b_esl
-#  define NAM_ESS nam$b_ess
-#  define NAM_FID nam$w_fid
-#  define NAM_FNB nam$l_fnb
-#  define NAM_RSA nam$l_rsa
-#  define NAM_RSL nam$b_rsl
-#  define NAM_RSS nam$b_rss
-#  define NAM_MAXRSS NAM$C_MAXRSS
-#  define NAM_NOP nam$b_nop
-#  define NAM_M_EXP_DEV NAM$M_EXP_DEV
-#  define NAM_M_SYNCHK NAM$M_SYNCHK
-#  define NAM_B_DEV nam$b_dev
-#  define NAM_L_DEV nam$l_dev
-#  define NAM_B_DIR nam$b_dir
-#  define NAM_L_DIR nam$l_dir
-#  define NAM_B_NAME nam$b_name
-#  define NAM_L_NAME nam$l_name
-#  define NAM_B_TYPE nam$b_type
-#  define NAM_L_TYPE nam$l_type
-#  define NAM_B_VER nam$b_ver
-#  define NAM_L_VER nam$l_ver
-
-#endif /* def NAML$C_MAXRSS */
 
 
 struct EB_header    /* Common header of extra block */
@@ -274,7 +193,7 @@ struct iosb
  *  apply structure padding, since this is explicitely forbidden in
  *  the specification (APPNOTE.TXT) for the PK VMS extra field.
  */
-typedef struct
+struct PK_info
 {
     ush tag_ra; ush len_ra;     byte ra[ATR$S_RECATTR];
     ush tag_uc; ush len_uc;     byte uc[ATR$S_UCHAR];
@@ -287,7 +206,7 @@ typedef struct
     ush tag_ui; ush len_ui;     byte ui[ATR$S_UIC];
     ush tag_fp; ush len_fp;     byte fp[ATR$S_FPRO];
     ush tag_rp; ush len_rp;     byte rp[ATR$S_RPRO];
-} PK_info_t;
+};
 #else /* !VMS_ORIGINAL_PK_LAYOUT */
 /*  The Info-ZIP support for the PK VMS extra field uses a reordered
  *  field layout to achieve ``natural alignment'' of the PK_info structure
@@ -297,7 +216,7 @@ typedef struct
  *  should use the field tag to identify the ATR$ field rather than
  *  assuming a fixed order of ATR$ fields in the PK VMS extra field.)
  */
-typedef struct
+struct PK_info
 {
     ush tag_ra; ush len_ra;     byte ra[ATR$S_RECATTR];
     ush tag_uc; ush len_uc;     byte uc[ATR$S_UCHAR];
@@ -310,7 +229,7 @@ typedef struct
     ush tag_fp; ush len_fp;     byte fp[ATR$S_FPRO];
     ush tag_rp; ush len_rp;     byte rp[ATR$S_RPRO];
     ush tag_jr; ush len_jr;     byte jr[ATR$S_JOURNAL];
-} PK_info_t;
+};
 #endif /* ?VMS_ORIGINAL_PK_LAYOUT */
 
 #if defined(__DECC) || defined(__DECCXX)
@@ -349,6 +268,21 @@ struct PK_header
 
 #define PK_HEADER_SIZE  8
 
-char *vms_file_version( char *s);
+#ifdef VMS_ZIP
+/* File description structure for Zip low level I/O */
+struct ioctx
+{
+    struct iosb         iosb;
+    ulg                 vbn;
+    ulg                 size;
+    ulg                 rest;
+    int                 status;
+    ush                 chan;
+    ush                 chan_pad;       /* alignment member */
+    long                acllen;
+    uch                 aclbuf[ATR$S_READACL];
+    struct PK_info      PKi;
+};
+#endif /* VMS_ZIP */
 
 #endif /* !__vms_h */

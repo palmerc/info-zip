@@ -1,8 +1,8 @@
 /*
-  Copyright (c) 1990-2002 Info-ZIP.  All rights reserved.
+  Copyright (c) 1990-2001 Info-ZIP.  All rights reserved.
 
   See the accompanying file LICENSE, version 2000-Apr-09 or later
-  (the contents of which are also included in zip.h) for terms of use.
+  (the contents of which are also included in unzip.h) for terms of use.
   If, for some reason, all these files are missing, the Info-ZIP license
   also may be found at:  ftp://ftp.info-zip.org/pub/infozip/license.html
 */
@@ -12,7 +12,6 @@
 #define __riscos_h
 
 #include <time.h>
-#include <stdio.h>
 
 typedef struct {
   int errnum;
@@ -51,7 +50,6 @@ typedef struct {
   int read;
 } DIR;
 
-#define dstrm DIR
 
 struct dirent {
   unsigned int d_off;          /* offset of next disk directory entry */
@@ -69,9 +67,6 @@ typedef struct {
   int objtype;
   char name[13];
 } riscos_direntry;
-
-#define SPARKID   0x4341        /* = "AC" */
-#define SPARKID_2 0x30435241    /* = "ARC0" */
 
 typedef struct {
   short         ID;
@@ -95,25 +90,47 @@ typedef struct {
 #  define S_IREAD  0000400
 #endif
 
+#ifndef NO_UNZIPH_STUFF
+#  include <time.h>
+#  if (!defined(HAVE_STRNICMP) & !defined(NO_STRNICMP))
+#    define NO_STRNICMP
+#  endif
+#  ifndef DATE_FORMAT
+#    define DATE_FORMAT DF_DMY
+#  endif
+#  define lenEOL 1
+#  define PutNativeEOL  *q++ = native(LF);
+#  define USE_STRM_INPUT
+#  define USE_FWRITE
+#  define PIPE_ERROR (errno == 9999)    /* always false */
+#  define isatty(x) (TRUE)   /* used in funzip.c to find if stdin redirected:
+     should find a better way, now just work as if stdin never redirected */
+#  define USE_EF_UT_TIME
+#  if (!defined(NOTIMESTAMP) && !defined(TIMESTAMP))
+#    define TIMESTAMP
+#  endif
+#  define localtime riscos_localtime
+#  define gmtime riscos_gmtime
+#endif /* !NO_UNZIPH_STUFF */
+
+#define _raw_getc() SWI_OS_ReadC()
+
 extern char *exts2swap; /* Extensions to swap */
 
 int stat(char *filename,struct stat *res);
 DIR *opendir(char *dirname);
 struct dirent *readdir(DIR *d);
-char *readd(DIR *d);
 void closedir(DIR *d);
 int unlink(char *f);
+int rmdir(char *d);
 int chmod(char *file, int mode);
 void setfiletype(char *fname,int ftype);
 void getRISCOSexts(char *envstr);
 int checkext(char *suff);
-int swapext(char *name, char *exptr);
+void swapext(char *name, char *exptr);
 void remove_prefix(void);
 void set_prefix(void);
 struct tm *riscos_localtime(const time_t *timer);
 struct tm *riscos_gmtime(const time_t *timer);
-
-int riscos_fseek(FILE *fd, long offset, int whence);
-/* work around broken assumption that fseek() is OK with -ve file offsets */
 
 #endif /* !__riscos_h */

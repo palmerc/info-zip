@@ -1,13 +1,13 @@
-Solaris packaging
+Solaris packaging 
 -----------------
 
-To generate a Solaris package for Info-ZIP zip utilities,
-first see the top level INSTALL and README files.  Do a
+To generate a Solaris package for Info-ZIP UnZip utilities,
+first see the top level INSTALL and README files.  Do a 
 "make solaris", which will automatically build two Solaris
-installable package files for the package, IZzip.
+installable package files for the package, IZunzip.
 
-   IZzip     -- Solaris installable package in directory format.
-   IZzip_$(arch).pkg -- Solaris installable package in "stream" format.
+   IZunzip     -- Solaris installable package in directory format.
+   IZunzip_$(arch).pkg -- Solaris installable package in "stream" format.
 
    Where:  $(arch) := system architecture, currently i386, sparc, or ppc.
                       (use "uname -p" to determine)
@@ -20,9 +20,9 @@ To install, simply:
 
     1)  copy the package to the target system's /tmp directory.
     2)  login or su to root
-    3)  pkgadd -d /tmp/IZzip_$(arch).pkg
-    4)  add /opt/Info-ZIP/IZzip/bin to PATH
-    5)  add /opt/Info-ZIP/IZzip/man to MANPATH
+    3)  pkgadd -d /tmp/IZunzip_$(arch).pkg
+    4)  add /opt/Info-ZIP/IZunzip/bin to PATH
+    5)  add /opt/Info-ZIP/IZunzip/man to MANPATH
 
 This works for both SPARC and x86.
 

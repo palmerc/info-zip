@@ -1,4 +1,4 @@
-| This Obey file prepares the zip port for a Desktop C re-compile.
+| This Obey file prepares the UnZip port for a Desktop C re-compile.
 | Run it and it will copy all the needed files into the correct
 | place.
 
@@ -6,18 +6,12 @@
 | for the user is to set 'RunMe1st' to Obey
 SetType <Obey$Dir>.srcrename FF8
 
-| Run 'srcrename' on the main zip directory with recursion enabled
+| Run 'srcrename' on the main UnZip directory with recursion enabled
 /<Obey$Dir>.srcrename -r -e c:h:s:o <Obey$Dir>.^
 
 | Create the 'o' directory
 CDir <Obey$Dir>.^.o
 
 | Put the Makefile in its correct place and set the correct filetype
+SetType <Obey$Dir>.makefile FE1
 Copy <Obey$Dir>.makefile <Obey$Dir>.^.makefile ~C ~V F
-
-| Uncomment the following lines if you're using gcc
-|| Put the Makefile in its correct place and set the correct filetype
-|Copy <Obey$Dir>.GMakefile <Obey$Dir>.^.makefile ~C~VF
-
-SetType <Obey$Dir>.^.makefile FE1
-SetType <Obey$Dir>.zipsfx Obey

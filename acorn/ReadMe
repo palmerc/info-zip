@@ -1,85 +1,69 @@
-Acorn-specific compile instructions
------------------------------------
-
-Use the "RunMe1st" file (it is an Obey file) to convert all the files from
-"filename/[chs]" to "[chs].filename" (so that zip could be easily compiled
-under RISC OS). It will also set the correct makefile.
-
-To compile just set the CSD to the main zip directory and run 'amu'.
-
-Currently only the Acorn C V5 compiler has been tested but probably also
-Acorn C V4 and the Acorn Assembler V2 will be able to compile zip.
-
-The default makefile is configured without the support for the
-Extended Timestamp Extra Field. If you wan to enable it you have to
-add "-DUSE_EF_UT_TIME" to CFLAGS (see makefile). Without the Extended
-Timestamp Field support, zipfiles created by zip are identical to the
-zipfiles created by SparkFS. However, the Extended Timestamp Field can
-be useful if you are going to unzip your zipfiles on a non-RISC OS machine
-since the correct time stamp will be preserved across different timezones.
-Note that in this case, both the SparkFS Extra Field and the Extended
-Timestamp Extra Field will be used, so the zipfiles will still be fully
-compatible with SparkFS and with the RISC OS version of unzip.
-
-The executables-only distributions will be compiled without the support for
-the Extended Timestamp Extra Field. If you need it but you can't compile zip
-yourself, you can contact the authors at the Info-ZIP address who will do it
-for you.
-
-
 Acorn-specific usage instructions
 ---------------------------------
 
-An extra option ('I') has been added to the Acorn port: if it is specified
-zip will not consider Image files (eg. DOS partitions or Spark archives when
-SparkFS is loaded) as directories but will store them as single files. This
-means that if you have, say, SparkFS loaded, zipping a Spark archive will
-result in a zipfile containing a directory (and its content) while using the
-'I' option will result in a zipfile containing a Spark archive. Obviously
-this second case will also be obtained (without the 'I' option) if SparkFS
-isn't loaded.
+As zipfiles can come from a variety of sources apart from Acorn machines,
+consideration had to be given to the handling of dot-extensions, e.g.
+"DOSFILE.TXT", "unix-filename.tar.gz". These are extracted as "DOSFILE/TXT"
+and "unix-filename/tar/gz"; their names may or may not be truncated,
+depending on where the files are being created: what filing system and, for
+Filecore-based filing systems such as ADFS or an IDEFS or SCSIFS, which
+disk/partition format (names will not be truncated if you're using E+ or F+).
 
-When adding files to a zipfile; to maintain FileCore compliance, all
-files named "file/ext" will be added to the archive as "file.ext".
-This presents no problem if you wish to use unzip to extract them on any
-other machine, as the files are correctly named. This also presents no
-problem if you use unzip for RISC OS, as the files are converted back to
-"file/ext" format. The only problem appears when you use SparkFS to
-decompress the files, as a file called "file.ext" will be extracted as
-"file_ext", not what it was added as. You must be careful about this.
+Where truncation occurs, you must be REALLY careful about extracting files
+from archives. The files
 
-Case Specific. Depending on how you type the command, files will be added
-exactly as named; in this example:
-*zip new/zip newfile
-*zip new/zip NewFile
-*zip new/zip NEWFILE
-will create an archive containing 3 copies of the same Risc OS file 'newfile'
-called 'newfile', 'NewFile' and 'NEWFILE'. Please be careful.
+    dummy_source.c and dummy_source.h
 
-The Acorn port conserves file attributes, including filetype, so if you
-zip on an Acorn, and unzip on another Acorn, filetypes will be maintained
-precisely as if you used uncompressed files. If you de-archive on another
-machine (PC, Mac, Unix etc..), filetypes will be ignored, but the files
-will be identical despite this. This feature is fully compatible with
-SparkFS, so zipfiles created by zip will be correctly uncompressed (including
-filetype, etc.) by SparkFS.
+will both be extracted as
 
-An additional feature went into this port to cope better with C-code
-and extensions. This allows the acorn files "c.foo" to be added to the
-archive as "foo/c", eventually appearing in the archive as "foo.c", allowing
-for better handling of C or C++ code. Example:
-*Set Zip$Exts "dir1:dir2:dir3"
-*zip new/zip dir1.file
-*zip new/zip dir2.help
-*zip new/zip dir3.textfile
-Creates a zipfile new/zip, with entries file.dir1, help.dir2, textfile.dir3.
-The usual settings for Zip$Exts are "h:o:s:c", allowing C code to be added
-to the archive in standard form.
+    dummy_sour
 
-A final note about the Acorn port regards the use of the 'n' option: this is
-used to specify a list of suffixes that will not be compressed (eg. .ZIP,
-since it is already a compressed file). Since RISC OS uses filetypes instead
-of suffixes, this list of suffixes is actually considered as a list of
-filetypes (3 hex digit format). By default, zip doesn't compress filetypes
-DDC (Archive, Spark or Zip), D96 (CFS files) and 68E (PackDir).
+UnZip will prompt you for confirmation of the over-writing of these files,
+but you must be really careful unless you wish to lose files! Also, because
+UnZip is a unix-ported program, the filenames are CASE SENSITIVE.
 
+    *unzip new/zip newfile
+
+will extract 'newfile', but not 'NewFile', 'NEWFILE' or any other
+combinations. However, you can use the -C option to force operations to
+disregard the case of filenames.
+
+The Acorn UnZip port has an additional feature to cope with the extraction of
+files containing 'c' code. As you may be aware, Acorn Desktop C requires all
+files called "foo.c" to be renamed to "c.foo", ie "foo" in a directory called
+"c".
+
+There are two ways of using this feature.
+
+- The old way: use a colon-separated environment variable named "Unzip$Exts".
+
+  Any extensions found in this variable will be extracted to directories
+  named after the extension, with the extension stripped. For example:
+
+    *Set Unzip$Exts "c:h:o:s"
+    *unzip foo/zip
+
+- The new way: use the -/ option. For example:
+
+  Any extensions found in the parameter for this option will be extracted to
+  directories named after the extension, with the extension stripped. For
+  example:
+
+    *unzip -/c:h:o:s foo/zip
+
+If foo/zip contains a file named "foo.c", this file will be written as "foo"
+in directory "c". This can be used to include "c:h:o:s:txt" to pull all the
+text files out to a separate directory.
+
+UnZip fully supports SparkFS Extra Field. This means that zipfiles created
+with SparkFS or Zip (on RISC OS) will be correctly unzipped, including
+filetypes.
+
+UnZipSFX can be used to create self-extracting archives. To use it, just
+create a common zipfile using Zip (or SparkFS), then load the UnZipSFX
+executable into an editor (eg. Edit, Zap), go with the caret the end of the
+file (using CTRL-CursorDown) and drag the zipfile to the editor window (in
+other words, append the zipfile to the UnZipSFX executable). Now, saving the
+resulting file (with filetype Absolute (&FF8)), you have a self-extracting
+archive (ie. double-clicking on it will unzip the contents of the original
+zipfile to the currently selected directory).

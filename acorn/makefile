@@ -1,4 +1,5 @@
-# Makefile for Zip, ZipNote, ZipCloak and ZipSplit
+# Makefile for UnZip, UnZipSFX, ZipInfo and fUnZip (5.5 or later)
+# last modified:  01 Mar 2004
 
 # add -g to CC to debug
 # add -d to BIND to debug
@@ -15,100 +16,109 @@ E    =
 #   LFLAGS2   flags after obj file list (libraries, etc)
 #
 LIB      =
-CBASE    = -throwback -wn -DASMV -apcs 3/26
+CBASE    = -throwback -wn -DNO_STRNICMP
 CFLAGS   = $(CBASE) -IC:,@.
-ASMFLAGS = -Throwback -Stamp -NoCache -CloseExec -quit -apcs 3/26
+ASMFLAGS = -Throwback -Stamp -NoCache -CloseExec -quit
 LFLAGS1  =
 LFLAGS2  = $(LIB) C:o.Stubs
 
-# Uncomment the following line to enable support for Unix
-# Extra Field (Timezone)
-#CFLAGS  = $(CFLAGS) -DUSE_EF_UT_TIME
-
 # object file lists
-OBJZ = zip.o zipfile.o zipup.o fileio.o util.o globals.o crc32.o \
-       crypt.o ttyio.o riscos.o acornzip.o swiven.o
+OBJS1 = unzip.o crc32.o crctab.o crypt.o envargs.o explode.o
+OBJS2 = extract.o fileio.o globals.o inflate.o list.o match.o
+OBJS3 = process.o ttyio.o unreduce.o unshrink.o zipinfo.o
+OBJS  = $(OBJS1) $(OBJS2) $(OBJS3) riscos.o swiven.o acorn.o
+OBJF  = funzip.o crc32.o cryptf.o globalsf.o inflatef.o ttyiof.o \
+        riscos.o swiven.o
+OBJX  = unzipsfx.o crc32.o crctab.o crypt_.o extract_.o fileio_.o globals.o \
+        inflate.o match.o process_.o ttyio.o acorn_.o swiven.o riscos_.o
 
-OBJI = deflate.o trees.o
-OBJA = match.o sendbits.o
-OBJU = zipfile_.o fileio_.o util_.o globals.o riscos.o acornzip_.o swiven.o
-OBJN = zipnote.o  $(OBJU)
-OBJC = zipcloak.o $(OBJU) crc32_.o crypt_.o ttyio.o
-OBJS = zipsplit.o $(OBJU)
+UNZIP_H = unzip.h unzpriv.h globals.h acorn/riscos.h acorn/swiven.h
 
-ZIP_H = zip.h ziperr.h tailor.h acorn/osdep.h acorn/riscos.h acorn/swiven.h
-
-all:      zip zipnote zipsplit zipcloak
+all:      unzip funzip unzipsfx
 
 
-install:  %.zip %.zipnote %.zipsplit %.zipcloak %.zipsfx \
-          zip zipnote zipsplit zipcloak zipsfx
-        $(SQUEEZE) zip %.zip
-        $(SQUEEZE) zipnote %.zipnote
-        $(SQUEEZE) zipsplit %.zipsplit
-        $(SQUEEZE) zipcloak %.zipcloak
-        copy acorn.zipsfx %.zipsfx ~CVF
+install:  unzip funzip unzipsfx
+        $(SQUEEZE) unzip %.unzip
+        $(SQUEEZE) funzip %.funzip
+        $(SQUEEZE) unzipsfx unzipsfx
+        copy %.unzip %.zipinfo ~CVF
 
 # suffix rules
-.SUFFIXES:      _.o .o .c
-.c_.o:
-        $(CC) $(CFLAGS) -DUTIL -c $*.c -o $*_.o
+.SUFFIXES:      .o .c
 .c.o:
         $(CC) $(CFLAGS) -c $<
 .s.o:
         $(ASM) $(ASMFLAGS) -from @*.s -to @*.o
 
-# rules for zip, zipnote, zipcloak and zipsplit
-$(OBJZ): $(ZIP_H)
-$(OBJI): $(ZIP_H)
-$(OBJN): $(ZIP_H)
-$(OBJS): $(ZIP_H)
-$(OBJC): $(ZIP_H)
-zip.o crc32.o crypt.o fileio.o zipfile.o zipup.o: crc32.h
-zipcloak.o crc32_.o crypt_.o fileio_.o zipfile_.o: crc32.h
-zip.o zipup.o crypt.o ttyio.o zipcloak.o crypt_.o: crypt.h
-zip.o zipup.o zipnote.o zipcloak.o zipsplit.o: revision.h
-zip.o crypt.o ttyio.o zipcloak.o crypt_.o: ttyio.h
+# rules for unzip and funzip
+crc32.o:        crc32.c $(UNZIP_H) zip.h
+crctab.o:       crctab.c $(UNZIP_H) zip.h
+crypt.o:        crypt.c $(UNZIP_H) zip.h crypt.h ttyio.h
+envargs.o:      envargs.c $(UNZIP_H)
+explode.o:      explode.c $(UNZIP_H)
+extract.o:      extract.c $(UNZIP_H) crypt.h
+fileio.o:       fileio.c $(UNZIP_H) crypt.h ttyio.h ebcdic.h
+funzip.o:       funzip.c $(UNZIP_H) crypt.h ttyio.h tables.h
+globals.o:      globals.c $(UNZIP_H)
+inflate.o:      inflate.c inflate.h $(UNZIP_H)
+list.o:         list.c $(UNZIP_H)
+match.o:        match.c $(UNZIP_H)
+process.o:      process.c $(UNZIP_H)
+ttyio.o:        ttyio.c $(UNZIP_H) zip.h crypt.h ttyio.h
+unreduce.o:     unreduce.c $(UNZIP_H)
+unshrink.o:     unshrink.c $(UNZIP_H)
+unzip.o:        unzip.c $(UNZIP_H) crypt.h unzvers.h consts.h
+zipinfo.o:      zipinfo.c $(UNZIP_H)
 
-crc32_.o: crc32.c
-        $(CC) $(CFLAGS) -DUTIL -c c.crc32 -o o.crc32_
-crypt_.o: crypt.c
-        $(CC) $(CFLAGS) -DUTIL -c c.crypt -o o.crypt_
-util_.o: util.c
-        $(CC) $(CFLAGS) -DUTIL -c c.util -o o.util_
-fileio_.o: fileio.c
-        $(CC) $(CFLAGS) -DUTIL -c c.fileio -o o.fileio_
-zipfile_.o: zipfile.c
-        $(CC) $(CFLAGS) -DUTIL -c c.zipfile -o o.zipfile_
-acornzip_.o: acorn/acornzip.c $(ZIP_H)
-        $(CC) $(CFLAGS) -DUTIL -c acorn/acornzip.c -o o.acornzip_
+crypt_.o:       crypt.c $(UNZIP_H) zip.h crypt.h ttyio.h
+        $(CC) $(CFLAGS) -DSFX -c c.crypt -o o.crypt_
+extract_.o:     extract.c $(UNZIP_H) crypt.h
+        $(CC) $(CFLAGS) -DSFX -c c.extract -o o.extract_
+fileio_.o:      fileio.c $(UNZIP_H) crypt.h
+        $(CC) $(CFLAGS) -DSFX -c c.fileio -o o.fileio_
+globals_.o:     globals.c $(UNZIP_H)
+        $(CC) $(CFLAGS) -DFUNZIP -c c.globals -o o.globals_
+inflate_.o:     inflate.c inflate.h $(UNZIP_H) crypt.h
+        $(CC) $(CFLAGS) -DFUNZIP -c c.inflate -o o.inflate_
+process_.o:     process.c $(UNZIP_H)
+        $(CC) $(CFLAGS) -DSFX -c c.process -o o.process_
+ttyio_.o:       ttyio.c $(UNZIP_H) zip.h crypt.h ttyio.h
+        $(CC) $(CFLAGS) -DFUNZIP -c c.ttyio -o o.ttyio_
 
-riscos.o: acorn/riscos.c acorn/riscos.h
+unzipsfx.o:     unzip.c $(UNZIP_H) crypt.h unzvers.h consts.h
+        $(CC) $(CFLAGS) -DSFX -c c.unzip -o o.unzipsfx
+
+o.cryptf:       c.crypt $(UNZIP_H) h.zip h.crypt h.ttyio
+        $(CC) $(CFLAGS) -DFUNZIP -c c.crypt -o o.cryptf
+o.globalsf:     c.globals $(UNZIP_H)
+        $(CC) $(CFLAGS) -DFUNZIP -c c.globals -o o.globalsf
+o.inflatef:     c.inflate h.inflate $(UNZIP_H) h.crypt
+        $(CC) $(CFLAGS) -DFUNZIP -c c.inflate -o o.inflatef
+o.ttyiof:       c.ttyio $(UNZIP_H) h.zip h.crypt h.ttyio
+        $(CC) $(CFLAGS) -DFUNZIP -c c.ttyio -o o.ttyiof
+
+acorn.o:       acorn/acorn.c $(UNZIP_H)
+        $(CC) $(CFLAGS) -c acorn/acorn.c
+acorn_.o:       acorn/acorn.c $(UNZIP_H)
+        $(CC) $(CFLAGS) -c -DSFX -DSFX_EXDIR -o acorn_.o acorn/acorn.c
+
+riscos.o:       acorn/riscos.c $(UNZIP_H)
         $(CC) $(CFLAGS) -c acorn/riscos.c
+riscos_.o:      acorn/riscos.c $(UNZIP_H)
+        $(CC) $(CFLAGS) -c -DSFX -DSFX_EXDIR -o riscos_.o acorn/riscos.c
 
-acornzip.o: acorn/acornzip.c $(ZIP_H)
-        $(CC) $(CFLAGS) -c acorn/acornzip.c
-
-match.o: acorn/match.s
-        $(ASM) $(ASMFLAGS) -from acorn.s.match -to o.match
-
-sendbits.o: acorn/sendbits.s
-        $(ASM) $(ASMFLAGS) -from acorn.s.sendbits -to o.sendbits
-
-swiven.o: acorn/swiven.s
+swiven.o:       acorn/swiven.s
         $(ASM) $(ASMFLAGS) -from acorn.s.swiven -to o.swiven
 
-zip:      $(OBJZ) $(OBJI) $(OBJA)
-          $(BIND) -o zip$(E) $(LFLAGS1) $(OBJZ) $(OBJI) $(OBJA) $(LFLAGS2)
-zipnote:  $(OBJN)
-          $(BIND) -o zipnote$(E) $(LFLAGS1) $(OBJN) $(LFLAGS2)
-zipcloak: $(OBJC)
-          $(BIND) -o zipcloak$(E) $(LFLAGS1) $(OBJC) $(LFLAGS2)
-zipsplit: $(OBJS)
-          $(BIND) -o zipsplit$(E) $(LFLAGS1) $(OBJS) $(LFLAGS2)
+unzip:    $(OBJS)
+          $(BIND) -o unzip$(E) $(LFLAGS1) $(OBJS) $(LFLAGS2)
+funzip:   $(OBJF)
+          $(BIND) -o funzip$(E) $(LFLAGS1) $(OBJF) $(LFLAGS2)
+unzipsfx: $(OBJX)
+          $(BIND) -o unzipsfx$(E) $(LFLAGS1) $(OBJX) $(LFLAGS2)
 
-clean:  ;remove zip; remove zipcloak;
-        remove zipsplit; remove zipnote;
+clean:  ;remove unzip; remove funzip;
+        remove zipinfo; remove unzipsfx;
         create o.!fake! 0
         wipe o.* ~cf
 
