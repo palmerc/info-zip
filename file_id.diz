@@ -1,10 +1,15 @@
-Info-ZIP's ZCrypt 2.9:  generic C sources.
-  C source code add-on to provide PKWARE-
-  compatible encryption and decryption sup-
-  port for Info-ZIP's Zip 2.3, UnZip 5.41,
-  and WiZ 5.01 (and later).
-This software has been placed in the public
-domain (i.e., completely unrestricted.)  It
-may be distributed freely according to sec-
-tion 740.13(e) of the amended Export Admin-
-istration Regulations of the US BXA.
+Info-ZIP's Zip 2.31: generic C sources.
+  Complete C source code for Info-ZIP's
+  PKZIP-compatible .zip archiver, for
+  all supported compilers and platforms
+  (Unix, OS/2, MS-DOS, NT, VMS, Amiga,
+  Atari, Mac, Acorn, VM/CMS, etc.), plus
+  lots of pretty decent documentation.
+  Includes Info-ZIP's ZCrypt 2.9 for
+  PKWARE-compatible standard encryption
+  and decryption support for Info-ZIP's
+  Zip 2.31, UnZip 5.52, and WiZ 5.02 (and
+  later).
+This is FREE (but copyrighted) software.
+See LICENSE for details on distribution
+and reuse.

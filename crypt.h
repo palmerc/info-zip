@@ -1,13 +1,24 @@
 /*
-  Copyright (c) 1990-2000 Info-ZIP.  All rights reserved.
+  Copyright (c) 1990-2005 Info-ZIP.  All rights reserved.
 
-  See the accompanying file LICENSE, version 2000-Apr-09 or later
+  See the accompanying file LICENSE, version 2004-May-22 or later
   (the contents of which are also included in zip.h) for terms of use.
-  If, for some reason, all these files are missing, the Info-ZIP license
+  If, for some reason, both of these files are missing, the Info-ZIP license
   also may be found at:  ftp://ftp.info-zip.org/pub/infozip/license.html
 */
 /*
   crypt.h (full version) by Info-ZIP.   Last revised:  [see CR_VERSION_DATE]
+
+  This encryption/decryption source code for Info-Zip software was
+  originally written in Europe.  The whole source package can be
+  freely distributed, including from the USA.  (Prior to January 2000,
+  re-export from the US was a violation of US law.)
+
+  NOTE on copyright history:
+  Previous versions of this source package (up to version 2.8) were
+  not copyrighted and put in the public domain.  If you cannot comply
+  with the Info-Zip LICENSE, you may want to look for one of those
+  public domain versions.
  */
 
 #ifndef __crypt_h   /* don't include more than once */
@@ -16,12 +27,30 @@
 #ifdef CRYPT
 #  undef CRYPT
 #endif
-
-#if !defined(NO_CRYPT)
+/*
+   Logic of selecting "full crypt" code:
+   a) default behaviour:
+      - dummy crypt code when compiling UnZipSFX stub, to minimize size
+      - full crypt code when used to compile Zip, UnZip and fUnZip
+   b) USE_CRYPT defined:
+      - always full crypt code
+   c) NO_CRYPT defined:
+      - never full crypt code
+   NO_CRYPT takes precedence over USE_CRYPT
+ */
+#if defined(NO_CRYPT)
+#  define CRYPT  0  /* dummy version */
+#else
+#if defined(USE_CRYPT)
 #  define CRYPT  1  /* full version */
 #else
-#  define CRYPT  0  /* dummy version */
+#if !defined(SFX)
+#  define CRYPT  1  /* full version for zip and main unzip*/
+#else
+#  define CRYPT  0  /* dummy version for unzip sfx */
 #endif
+#endif /* ?USE_CRYPT */
+#endif /* ?NO_CRYPT */
 
 #if CRYPT
 /* full version */
@@ -34,10 +63,10 @@
 #define CR_MINORVER        9
 #ifdef CR_BETA
 #  define CR_BETA_VER      "a BETA"
-#  define CR_VERSION_DATE  "9 April 2000"      /* last real code change */
+#  define CR_VERSION_DATE  "05 May 2000"       /* last real code change */
 #else
 #  define CR_BETA_VER      ""
-#  define CR_VERSION_DATE  "22 April 2000"     /* last public release date */
+#  define CR_VERSION_DATE  "05 May 2000"       /* last public release date */
 #  define CR_RELEASE
 #endif
 

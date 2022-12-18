@@ -1,9 +1,9 @@
 /*
-  Copyright (c) 1990-2000 Info-ZIP.  All rights reserved.
+  Copyright (c) 1990-2005 Info-ZIP.  All rights reserved.
 
-  See the accompanying file LICENSE, version 2000-Apr-09 or later
+  See the accompanying file LICENSE, version 2004-May-22 or later
   (the contents of which are also included in zip.h) for terms of use.
-  If, for some reason, all these files are missing, the Info-ZIP license
+  If, for some reason, both of these files are missing, the Info-ZIP license
   also may be found at:  ftp://ftp.info-zip.org/pub/infozip/license.html
 */
 /*
@@ -250,6 +250,10 @@ int zipcloak(z, source, dest, passwd)
         return ferror(source) ? ZE_READ : ZE_EOF;
     }
     if (fflush(dest) == EOF) return ZE_TEMP;
+
+    /* Update number of bytes written to output file */
+    tempzn += (4 + LOCHEAD) + z->nam + z->ext + z->siz;
+
     return ZE_OK;
 }
 
@@ -332,6 +336,9 @@ int zipbare(z, source, dest, passwd)
         return ferror(source) ? ZE_READ : ZE_EOF;
     }
     if (fflush(dest) == EOF) return ZE_TEMP;
+
+    /* Update number of bytes written to output file */
+    tempzn += (4 + LOCHEAD) + z->nam + z->ext + z->siz;
 
     return ZE_OK;
 }

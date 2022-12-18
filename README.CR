@@ -1,27 +1,28 @@
 _____________________________________________________________________________
 
-  This is Info-ZIP's README.CR for zcrypt29.zip, last updated 22 April 2000.
+  This is Info-ZIP's README.CR for zcrypt29.zip, last updated 28 February 2005.
 _____________________________________________________________________________
 
 
-The files described below contain the encryption/decryption code for Zip 2.3,
-UnZip 5.4, and WiZ 5.0 (and later).  They constitute only an add-on to what
-used to be referred to as the "exportable versions" (generally named zip23.zip,
-unzip540.tar.Z, and wiz500.zip) and cannot be used without the complete Zip,
-UnZip, or WiZ packages.  Newer versions of the packages, such as UnZip 5.41
-and WiZ 5.01, already include the full encryption/decryption source code; for
-other packages, check the comments at the top of crypt.c and crypt.h to see.
+The files described below contain the encryption/decryption code for Zip 2.31,
+UnZip 5.52, and WiZ 5.02 (and later).  These files are included in the main
+source for all of these.  This file both describes the history of this package
+and notes the current conditions for use.  Check the comments at the top
+of crypt.c and crypt.h for additional information.
 
 As of version 2.9, this encryption source code is copyrighted by Info-ZIP;
 see the enclosed LICENSE file for details.  Older versions remain in the pub-
 lic domain.  Zcrypt was originally written in Europe and, as of April 2000,
-can be freely distributed from the US as well as other countries.  (The
-ability to export from the US is new and is due to a change in the Bureau
+can be freely distributed from the US as well as other countries.
+
+(The ability to export from the US is new and is due to a change in the Bureau
 of Export Administration's regulations, as published in Volume 65, Number
 10, of the Federal Register [14 January 2000].  Info-ZIP filed the required
 notification via e-mail on 9 April 2000; see the USexport.msg file in this
-archive.  Note that the exemption covers only source code, not compiled
-binaries.)
+archive.  However, as of June 2002, it can now be freely distributed in both
+source and object forms from any country, including the USA under License
+Exception TSU of the U.S. Export Administration Regulations (section 740.13(e))
+of 6 June 2002.)
 
     LIKE ANYTHING ELSE THAT IS FREE, ZIP, UNZIP AND THEIR ASSOCIATED
     UTILITIES ARE PROVIDED AS IS AND COME WITH NO WARRANTY OF ANY KIND,
@@ -45,7 +46,10 @@ public-key-based encryption system available from various Internet sites.
 PGP has Zip and UnZip built into it.  The most recent version at the time
 this was written was 6.5, although older versions are still widespread.
 
-Zip 2.3x and UnZip 5.4x are compatible with PKZIP 2.04g.  (Thanks to Phil
+We are looking at adding AES strong encryption to future versions of Zip and
+UnZip.
+
+Zip 2.3x and UnZip 5.5x are compatible with PKZIP 2.04g.  (Thanks to Phil
 Katz for accepting our suggested minor changes to the zipfile format.)
 
 IMPORTANT NOTE:
@@ -60,7 +64,7 @@ IMPORTANT NOTE:
   this problem.
 
 
-Contents:
+Contents that were distributed and now are part of the main source files:
 
   file           what it is
   ----           ----------
@@ -72,7 +76,7 @@ Contents:
   crypt.h        code for encryption and decryption
   file_id.diz    description file for some BBSes
 
-All of the files are in Unix (LF only) format.  On MSDOS systems, you
+Most all of the files are in Unix (LF only) format.  On MSDOS systems, you
 can use the -a option of UnZip to convert the source files to CRLF
 format.  This is only necessary if you wish to edit the files -- they
 will compile as is with Microsoft C and Turbo/Borland C++ 1.0 or
@@ -82,7 +86,7 @@ should be able to find Zip and UnZip in the same place you found this
 (see ftp://ftp.info-zip.org/pub/infozip/Info-ZIP.html or the file
 "WHERE" for details).
 
-To use the zcrypt sources:
+To update previous versions using the zcrypt sources:
 
   (1) Get the main sources (e.g., Zip 2.3) and unpack into a working
       directory, as usual.
