@@ -1,38 +1,32 @@
 /*
+  Copyright (c) 1990-1999 Info-ZIP.  All rights reserved.
 
- Copyright (C) 1990,1991 Mark Adler, Richard B. Wales, and Jean-loup Gailly.
- Permission is granted to any individual or institution to use, copy, or
- redistribute this software so long as all of the original files are included
- unmodified, that it is not sold for profit, and that this copyright notice
- is retained.
-
+  See the accompanying file LICENSE, version 1999-Oct-05 or later
+  (the contents of which are also included in zip.h) for terms of use.
+  If, for some reason, both of these files are missing, the Info-ZIP license
+  also may be found at:  ftp://ftp.cdrom.com/pub/infozip/license.html
 */
-
 /*
- *  crypt.h by Mark Adler.
+   crypt.h (dummy version) by Info-ZIP.      Last revised: 15 Aug 98
+
+   This is a non-functional version of Info-ZIP's crypt.h encryption/
+   decryption header file for Zip, ZipCloak, UnZip and fUnZip.  This
+   file is not copyrighted and may be distributed without restriction.
+   See the "WHERE" file for sites from which to obtain the full crypt
+   sources (zcrypt28.zip or later).
  */
 
-/* Set up portability */
-#include "tailor.h"
+#ifndef __crypt_h   /* don't include more than once */
+#define __crypt_h
 
-/* Define zfwrite() and zputc() functions */
-#ifdef EXPORT
-#  define zfwrite fwrite
-#  define zputc putc
-#else /* !EXPORT */
-   extern int zfwrite OF((voidp *, extent, extent, FILE *));
-   extern int zfputc OF((int, FILE *));
-   extern char *key;
-#  define zputc(b,f) (key!=NULL?zfputc(b,f):putc(b,f))
-#endif /* ?EXPORT */
+#ifdef CRYPT
+#  undef CRYPT
+#endif
+#define CRYPT  0    /* dummy version */
 
-/* The implode routines now use the same temporary name generator */
-char *tempname OF((int));
+#define zencode
+#define zdecode
 
-/* I'm sneaking this in on Rich's code to make my compiler a bit happier */
-#ifdef NeXT
-   extern void free(voidp *);
-   extern voidp *qsort(voidp *, extent, extent, int (*)());
-   extern extent strlen(char *);
-   extern int unlink(char *);
-#endif /* NeXT */
+#define zfwrite  fwrite
+
+#endif /* !__crypt_h */
